@@ -264,3 +264,4 @@ Makefile
 
 #version
 version.info
+.changelog-base
