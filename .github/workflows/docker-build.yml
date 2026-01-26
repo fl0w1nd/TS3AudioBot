@@ -1,0 +1,189 @@
+name: Build and Push Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (default: version from WebInterface/package.json)"
+        required: false
+        default: ""
+      tag_type:
+        description: "Tag type"
+        required: false
+        default: "release"
+        type: choice
+        options:
+          - "release"   # version + latest
+          - "dev"       # dev + git hash
+          - "isolated"  # tag only, no overwrite
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.vars.outputs.image }}
+      tags: ${{ steps.tags.outputs.tags }}
+      version: ${{ steps.pkg.outputs.version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get WebInterface package.json version
+        id: pkg
+        run: |
+          RAW_VERSION=$(node -p "require('./WebInterface/package.json').version")
+          if echo "$RAW_VERSION" | grep -qE '^v'; then
+            VERSION="$RAW_VERSION"
+          else
+            VERSION="v${RAW_VERSION}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Package version: ${VERSION}"
+
+      - name: Get git short hash
+        id: git
+        run: |
+          HASH=$(git rev-parse --short HEAD)
+          echo "hash=${HASH}" >> "$GITHUB_OUTPUT"
+          echo "Git hash: ${HASH}"
+
+      - name: Vars (lowercased image)
+        id: vars
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          IMAGE=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Image: ${IMAGE}"
+
+      - name: Determine tags
+        id: tags
+        run: |
+          IMAGE="${{ steps.vars.outputs.image }}"
+          TAG="${{ github.event.inputs.tag }}"
+          TAG_TYPE="${{ github.event.inputs.tag_type }}"
+          PKG_VERSION="${{ steps.pkg.outputs.version }}"
+          GIT_HASH="${{ steps.git.outputs.hash }}"
+
+          case "$TAG_TYPE" in
+            "release")
+              VERSION="${TAG:-$PKG_VERSION}"
+              TAGS="${IMAGE}:${VERSION}
+          ${IMAGE}:latest"
+              echo "Build type: Release"
+              echo "Tags: ${VERSION}, latest"
+              ;;
+            "dev")
+              TAGS="${IMAGE}:dev
+          ${IMAGE}:${GIT_HASH}"
+              echo "Build type: Dev"
+              echo "Tags: dev, ${GIT_HASH}"
+              ;;
+            "isolated")
+              if [ -z "$TAG" ]; then
+                echo "Error: Tag is required for isolated builds"
+                exit 1
+              fi
+              TAGS="${IMAGE}:${TAG}"
+              echo "Build type: Isolated"
+              echo "Tags: ${TAG}"
+              ;;
+          esac
+
+          echo "tags<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$TAGS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Check if release version exists
+        if: github.event.inputs.tag_type == 'release'
+        run: |
+          IMAGE="${{ steps.vars.outputs.image }}"
+          VERSION="${{ github.event.inputs.tag }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="${{ steps.pkg.outputs.version }}"
+          fi
+          echo "Checking if ${VERSION} exists..."
+
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${VERSION}" 2>/dev/null || echo "000")
+
+          if [ "$STATUS" = "200" ]; then
+            echo "::error::Version ${VERSION} already exists! Please bump version in WebInterface/package.json."
+            exit 1
+          fi
+
+          echo "✓ Version ${VERSION} is available"
+
+      - name: Check if isolated tag exists
+        if: github.event.inputs.tag_type == 'isolated'
+        run: |
+          IMAGE="${{ steps.vars.outputs.image }}"
+          TAG="${{ github.event.inputs.tag }}"
+
+          if echo "$TAG" | grep -qE "^v[0-9]|^latest$"; then
+            echo "::error::Cannot use version tags (v*) or 'latest' as isolated tag"
+            exit 1
+          fi
+
+          echo "Checking if ${TAG} exists..."
+
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${TAG}" 2>/dev/null || echo "000")
+
+          if [ "$STATUS" = "200" ]; then
+            echo "::error::Tag '${TAG}' already exists!"
+            exit 1
+          fi
+
+          echo "✓ Tag ${TAG} is available"
+
+  build:
+    needs: prepare
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate version.info
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          BRANCH="${{ github.ref_name }}"
+          COMMIT=$(git rev-parse --short HEAD)
+          printf "%s;%s;%s" "$VERSION" "$BRANCH" "$COMMIT" > version.info
+          echo "version.info: $(cat version.info)"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ needs.prepare.outputs.tags }}
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,scope=amd64,mode=max
+          provenance: false
+          sbom: false

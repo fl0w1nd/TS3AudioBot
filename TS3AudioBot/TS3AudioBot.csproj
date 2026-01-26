@@ -92,21 +92,52 @@
     </EmbeddedResource>
   </ItemGroup>
 
-  <Target Name="GenerateGitVersion" BeforeTargets="BeforeCompile">
+  <Target Name="GenerateGitVersion" BeforeTargets="BeforeCompile" Condition="'$(SkipGitVersion)' != 'true'">
+    <PropertyGroup>
+      <VersionInfoFile Condition="'$(VersionInfoFile)' == ''">$(MSBuildProjectDirectory)/../version.info</VersionInfoFile>
+    </PropertyGroup>
     <ItemGroup>
-      <VersionBuildScript Include="build.csx" />
       <VersionBuildOutputFile Include="$(IntermediateOutputPath)Version.g.cs" />
     </ItemGroup>
-    <Exec Command="dotnet tool install --global dotnet-script" IgnoreExitCode="true" />
-    <Exec Command="dotnet tool install --global GitVersion.Tool" IgnoreExitCode="true" />
-    <Exec Command="dotnet script @(VersionBuildScript) -- @(VersionBuildOutputFile) $(Configuration)" IgnoreExitCode="true">
-      <Output TaskParameter="ExitCode" PropertyName="GitverExit" />
-    </Exec>
-    <ItemGroup Condition="$(GitverExit) == '0'">
+    <ReadLinesFromFile File="$(VersionInfoFile)" Condition="Exists('$(VersionInfoFile)')">
+      <Output TaskParameter="Lines" ItemName="_VersionFileLines" />
+    </ReadLinesFromFile>
+    <PropertyGroup>
+      <_VersionInfoRaw>@(_VersionFileLines->'%(Identity)')</_VersionInfoRaw>
+      <GitVersion Condition="'$(_VersionInfoRaw)' != ''">$([System.String]::Copy('$(_VersionInfoRaw)').Split(';')[0].Trim())</GitVersion>
+      <GitBranch Condition="'$(_VersionInfoRaw)' != '' and $([System.String]::Copy('$(_VersionInfoRaw)').Split(';').Length) &gt; 1">$([System.String]::Copy('$(_VersionInfoRaw)').Split(';')[1].Trim())</GitBranch>
+      <GitCommit Condition="'$(_VersionInfoRaw)' != '' and $([System.String]::Copy('$(_VersionInfoRaw)').Split(';').Length) &gt; 2">$([System.String]::Copy('$(_VersionInfoRaw)').Split(';')[2].Trim())</GitCommit>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(GitVersion)' == ''">
+      <GitVersion>&lt;?&gt;</GitVersion>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(GitBranch)' == ''">
+      <GitBranch>&lt;?&gt;</GitBranch>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(GitCommit)' == ''">
+      <GitCommit>&lt;?&gt;</GitCommit>
+    </PropertyGroup>
+    <PropertyGroup>
+      <GitVersionEsc>$([System.String]::Copy('$(GitVersion)').Replace('\','\\').Replace('&quot;','\\&quot;'))</GitVersionEsc>
+      <GitBranchEsc>$([System.String]::Copy('$(GitBranch)').Replace('\','\\').Replace('&quot;','\\&quot;'))</GitBranchEsc>
+      <GitCommitEsc>$([System.String]::Copy('$(GitCommit)').Replace('\','\\').Replace('&quot;','\\&quot;'))</GitCommitEsc>
+    </PropertyGroup>
+    <ItemGroup>
+      <_VersionLines Include="namespace TS3AudioBot.Environment {" />
+      <_VersionLines Include="  public partial class BuildData {" />
+      <_VersionLines Include="    partial void GetDataInternal() {" />
+      <_VersionLines Include="      Version = &quot;$(GitVersionEsc)&quot;%3B" />
+      <_VersionLines Include="      Branch = &quot;$(GitBranchEsc)&quot;%3B" />
+      <_VersionLines Include="      CommitSha = &quot;$(GitCommitEsc)&quot;%3B" />
+      <_VersionLines Include="      BuildConfiguration = &quot;$(Configuration)&quot;%3B" />
+      <_VersionLines Include="    }" />
+      <_VersionLines Include="  }" />
+      <_VersionLines Include="}" />
       <FileWrites Include="@(VersionBuildOutputFile)" />
       <Compile Include="@(VersionBuildOutputFile)">
         <AutoGen>True</AutoGen>
       </Compile>
     </ItemGroup>
+    <WriteLinesToFile File="@(VersionBuildOutputFile)" Lines="@(_VersionLines)" Overwrite="true" />
   </Target>
 </Project>

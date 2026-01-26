@@ -252,3 +252,15 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+
+# Date
+data/
+
+# agent/
+.agent/
+
+# Makefile
+Makefile
+
+#version
+version.info
