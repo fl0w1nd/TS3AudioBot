@@ -2672,5 +2672,14 @@ namespace TS3AudioBot.Localization {
                 return ResourceManager.GetString("info_status_random", resourceCulture);
             }
         }
+        
+        /// <summary>
+        ///   Looks up a localized string similar to Recording could not be deleted..
+        /// </summary>
+        internal static string error_recording_delete_failed {
+            get {
+                return ResourceManager.GetString("error_recording_delete_failed", resourceCulture);
+            }
+        }
     }
 }

@@ -15,6 +15,7 @@ namespace TSLib.Audio
 {
 	public class DecoderPipe : IAudioPipe, IDisposable, ISampleInfo
 	{
+		private static readonly NLog.Logger Log = NLog.LogManager.GetCurrentClassLogger();
 		public bool Active => OutStream?.Active ?? false;
 		public IAudioPassiveConsumer? OutStream { get; set; }
 
@@ -39,13 +40,28 @@ namespace TSLib.Audio
 		{
 			if (OutStream is null || meta?.Codec is null)
 				return;
+			if (data.Length < 2)
+			{
+				Log.Debug("Opus packet too small from client {0} ({1}). Dropping packet.", meta.In.Sender, meta.Codec.Value);
+				return;
+			}
 
 			switch (meta.Codec.Value)
 			{
 			case Codec.OpusVoice:
 				{
-					var decoder = GetDecoder(meta.In.Sender, Codec.OpusVoice);
-					var decodedData = decoder.Decode(data, decodedBuffer.AsSpan(0, decodedBuffer.Length / 2));
+					Span<byte> decodedData;
+					try
+					{
+						var decoder = GetDecoder(meta.In.Sender, Codec.OpusVoice);
+						decodedData = decoder.Decode(data, decodedBuffer.AsSpan(0, decodedBuffer.Length / 2));
+					}
+					catch (Exception ex)
+					{
+						Log.Debug(ex, "Opus decode failed for client {0} (voice). Dropping packet.", meta.In.Sender);
+						ResetDecoder(meta.In.Sender);
+						return;
+					}
 					int dataLength = decodedData.Length;
 					if (!AudioTools.TryMonoToStereo(decodedBuffer, ref dataLength))
 						break;
@@ -55,8 +71,18 @@ namespace TSLib.Audio
 
 			case Codec.OpusMusic:
 				{
-					var decoder = GetDecoder(meta.In.Sender, Codec.OpusMusic);
-					var decodedData = decoder.Decode(data, decodedBuffer);
+					Span<byte> decodedData;
+					try
+					{
+						var decoder = GetDecoder(meta.In.Sender, Codec.OpusMusic);
+						decodedData = decoder.Decode(data, decodedBuffer);
+					}
+					catch (Exception ex)
+					{
+						Log.Debug(ex, "Opus decode failed for client {0} (music). Dropping packet.", meta.In.Sender);
+						ResetDecoder(meta.In.Sender);
+						return;
+					}
 					OutStream?.Write(decodedData, meta);
 				}
 				break;
@@ -80,6 +106,15 @@ namespace TSLib.Audio
 			var newDecoder = CreateDecoder(codec);
 			decoders[sender] = (newDecoder, codec);
 			return newDecoder;
+		}
+
+		private void ResetDecoder(ClientId sender)
+		{
+			if (decoders.TryGetValue(sender, out var decoder))
+			{
+				decoder.Item1.Dispose();
+				decoders.Remove(sender);
+			}
 		}
 
 		private OpusDecoder CreateDecoder(Codec codec)

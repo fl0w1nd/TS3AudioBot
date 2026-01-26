@@ -23,8 +23,19 @@ namespace TS3AudioBot
 
 		public DbStore(ConfDb config)
 		{
-			var historyFile = Path.GetFullPath(config.Path);
-			database = new LiteDatabase(historyFile);
+			if (string.IsNullOrWhiteSpace(config.Path))
+				throw new ArgumentException("Database path is empty", nameof(config));
+
+			string historyFile = Path.GetFullPath(config.Path);
+
+			// Use Exclusive mode to avoid file locking issues on macOS
+			var connectionString = new ConnectionString
+			{
+				Filename = historyFile,
+				Mode = LiteDB.FileMode.Exclusive
+			};
+
+			database = new LiteDatabase(connectionString);
 
 			metaTable = database.GetCollection<DbMetaData>(DbMetaInformationTable);
 		}

@@ -25,7 +25,7 @@ namespace TSLib.Helper
 
 		public static bool DirectLoadLibrary(string lib, Action? dummyLoad = null)
 		{
-			if (Tools.IsLinux)
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
 			{
 				try
 				{

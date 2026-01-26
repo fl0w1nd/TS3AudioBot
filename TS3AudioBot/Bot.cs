@@ -94,6 +94,7 @@ namespace TS3AudioBot
 			builder.RequestModule<Player>();
 			builder.RequestModule<CustomTargetPipe>();
 			builder.RequestModule<IVoiceTarget, CustomTargetPipe>();
+			builder.RequestModule<RecordingManager>();
 			builder.RequestModule<SessionManager>();
 			builder.RequestModule<ResolveContext>();
 			builder.RequestModule<CommandManager>();
@@ -115,7 +116,9 @@ namespace TS3AudioBot
 			ts3FullClient = Injector.GetModuleOrThrow<TsFullClient>();
 			ts3client = Injector.GetModuleOrThrow<Ts3Client>();
 			player = Injector.GetModuleOrThrow<Player>();
+			var recordingManager = Injector.GetModuleOrThrow<RecordingManager>();
 			Scheduler = Injector.GetModuleOrThrow<DedicatedTaskScheduler>();
+			Scheduler.Invoke(async () => await recordingManager.InitializeAsync()).Wait();
 			var customTarget = Injector.GetModuleOrThrow<CustomTargetPipe>();
 			player.SetTarget(customTarget);
 			Injector.AddModule(ts3FullClient.Book);

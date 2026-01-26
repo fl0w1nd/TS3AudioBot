@@ -756,6 +756,46 @@ namespace TS3AudioBot
 			return new JsonArray<AudioLogEntry>(results, historyManager.Format);
 		}
 
+		[Command("recording status", "cmd_recording_status_help")]
+		public static RecordingStatus CommandRecordingStatus(RecordingManager recording)
+			=> new RecordingStatus
+			{
+				Enabled = recording.Enabled,
+				Active = recording.Active,
+				Current = recording.Current
+			};
+
+		[Command("recording enable", "cmd_recording_enable_help")]
+		public static RecordingStatus CommandRecordingEnable(RecordingManager recording, bool enabled)
+		{
+			recording.SetEnabled(enabled);
+			return CommandRecordingStatus(recording);
+		}
+
+		[Command("recording list", "cmd_recording_list_help")]
+		public static JsonArray<RecordingInfo> CommandRecordingList(RecordingManager recording, DateTime? from = null, DateTime? to = null, Uid? uid = null, string? name = null)
+			=> new JsonArray<RecordingInfo>(recording.ListRecordings(from, to, uid?.Value, name).ToArray(), _ => string.Empty);
+
+		[Command("recording users", "cmd_recording_users_help")]
+		public static JsonArray<RecordingParticipant> CommandRecordingUsers(RecordingManager recording, DateTime? from = null, DateTime? to = null)
+			=> new JsonArray<RecordingParticipant>(recording.ListParticipants(from, to).ToArray(), _ => string.Empty);
+
+		[Command("recording get", "cmd_recording_get_help")]
+		public static DataStream CommandRecordingGet(RecordingManager recording, string id)
+			=> recording.OpenRecordingStream(id);
+
+		[Command("recording stream", "cmd_recording_stream_help")]
+		public static DataStream CommandRecordingStream(RecordingManager recording, string id)
+			=> recording.OpenRecordingStream(id, follow: true);
+
+		[Command("recording delete", "cmd_recording_delete_help")]
+		public static bool CommandRecordingDelete(RecordingManager recording, string id)
+		{
+			if (!recording.DeleteRecording(id))
+				throw new CommandException(strings.error_recording_delete_failed, CommandExceptionReason.CommandError);
+			return true;
+		}
+
 		[Command("if")]
 		[Usage("<argument0> <comparator> <argument1> <then>", "Compares the two arguments and returns or executes the then-argument")]
 		[Usage("<argument0> <comparator> <argument1> <then> <else>", "Same as before and return the else-arguments if the condition is false")]

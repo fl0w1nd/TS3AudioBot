@@ -990,4 +990,28 @@ with the id {1}?</value>
   <data name="cmd_jump_help" xml:space="preserve">
     <value>Jumps to the requested index in the current queue and starts playing.</value>
   </data>
+  <data name="cmd_recording_status_help" xml:space="preserve">
+    <value>Gets recording status (enabled/active and current recording info).</value>
+  </data>
+  <data name="cmd_recording_enable_help" xml:space="preserve">
+    <value>Enables or disables channel recording. Parameters: enabled (true/false).</value>
+  </data>
+  <data name="cmd_recording_list_help" xml:space="preserve">
+    <value>Lists recordings. Optional: from, to (date or datetime), uid, name filters.</value>
+  </data>
+  <data name="cmd_recording_users_help" xml:space="preserve">
+    <value>Lists users found in recordings. Optional: from, to (date or datetime) filters.</value>
+  </data>
+  <data name="cmd_recording_get_help" xml:space="preserve">
+    <value>Downloads a recording file by id.</value>
+  </data>
+  <data name="cmd_recording_stream_help" xml:space="preserve">
+    <value>Streams a recording file by id (supports open recordings).</value>
+  </data>
+  <data name="cmd_recording_delete_help" xml:space="preserve">
+    <value>Deletes a recording by id.</value>
+  </data>
+  <data name="error_recording_delete_failed" xml:space="preserve">
+    <value>Recording could not be deleted.</value>
+  </data>
 </root>

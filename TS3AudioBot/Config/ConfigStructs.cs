@@ -152,6 +152,7 @@ namespace TS3AudioBot.Config
 		public ConfAudio Audio { get; } = Create<ConfAudio>("audio");
 		public ConfPlaylists Playlists { get; } = Create<ConfPlaylists>("playlists");
 		public ConfHistory History { get; } = Create<ConfHistory>("history");
+		public ConfRecording Recording { get; } = Create<ConfRecording>("recording");
 		public ConfEvents Events { get; } = Create<ConfEvents>("events");
 	}
 
@@ -265,6 +266,25 @@ namespace TS3AudioBot.Config
 			"Whether or not deleted history ids should be filled up with new songs.");
 	}
 
+	public class ConfRecording : ConfigTable
+	{
+		public ConfigValue<bool> Enabled { get; } = new ConfigValue<bool>("enabled", false,
+			"Enable or disable channel recording.");
+		public ConfigValue<string> Path { get; } = new ConfigValue<string>("path", Helper.BotPaths.Recordings,
+			"Relative or absolute path to store recordings. Relative paths are placed in the bot config folder.");
+		public ConfigValue<string> MaxTotalSize { get; } = new ConfigValue<string>("max_total_size", "5G",
+			"Maximum total size for recordings. Oldest files will be deleted when exceeded. Supports suffixes: K, M, G, T.")
+		{
+			Validator = ConfSizeExtensions.ValidateSize
+		};
+		public ConfigValue<TimeSpan> StopDelay { get; } = new ConfigValue<TimeSpan>("stop_delay", TimeSpan.FromSeconds(30),
+			"Delay before stopping a recording after the last client leaves the channel.");
+		public ConfigValue<TimeSpan> MinDuration { get; } = new ConfigValue<TimeSpan>("min_duration", TimeSpan.FromSeconds(5),
+			"Minimum recording duration required to keep a file. Shorter recordings will be discarded.");
+		public ConfigValue<int> Bitrate { get; } = new ConfigValue<int>("bitrate", 48,
+			"Opus recording bitrate in kbps.");
+	}
+
 	public class ConfData : ConfigTable
 	{
 		//public ConfigValue<string> MaxItemCount { get; } = new ConfigValue<string>("disk_data", "1M"); // TODO
@@ -370,6 +390,18 @@ namespace TS3AudioBot.Config
 					return r;
 			}
 			return R.Ok;
+		}
+	}
+
+	public static class ConfSizeExtensions
+	{
+		public static E<string> ValidateSize(string value)
+		{
+			if (string.IsNullOrWhiteSpace(value))
+				return R.Ok;
+			if (Helper.TextUtil.TryParseBytes(value, out _))
+				return R.Ok;
+			return "Invalid size. Expected a number with optional suffix (K, M, G, T).";
 		}
 	}
 }

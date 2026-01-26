@@ -71,6 +71,7 @@ namespace TS3AudioBot.Helper
 		}
 
 		private static readonly Regex TimeReg = new Regex(@"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?(?:(\d+)ms)?$", Util.DefaultRegexConfig);
+		private static readonly Regex SizeReg = new Regex(@"^\s*(\d+(?:\.\d+)?)\s*([kmgtp]?i?b?)?\s*$", Util.DefaultRegexConfig);
 
 		public static TimeSpan? ParseTime(string value)
 		{
@@ -78,6 +79,61 @@ namespace TS3AudioBot.Helper
 			return ParseTimeAsSimple(value)
 				?? ParseTimeAsDigital(value)
 				?? ParseTimeAsXml(value);
+		}
+
+		public static bool TryParseBytes(string value, out long bytes)
+		{
+			bytes = 0;
+			if (string.IsNullOrWhiteSpace(value))
+				return false;
+
+			var match = SizeReg.Match(value);
+			if (!match.Success)
+				return false;
+
+			if (!double.TryParse(match.Groups[1].Value, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var num))
+				return false;
+
+			var unit = match.Groups[2].Value.ToLowerInvariant();
+			long factor;
+			if (unit == "" || unit == "b")
+				factor = 1L;
+			else if (unit == "k" || unit == "kb" || unit == "kib")
+				factor = 1024L;
+			else if (unit == "m" || unit == "mb" || unit == "mib")
+				factor = 1024L * 1024L;
+			else if (unit == "g" || unit == "gb" || unit == "gib")
+				factor = 1024L * 1024L * 1024L;
+			else if (unit == "t" || unit == "tb" || unit == "tib")
+				factor = 1024L * 1024L * 1024L * 1024L;
+			else if (unit == "p" || unit == "pb" || unit == "pib")
+				factor = 1024L * 1024L * 1024L * 1024L * 1024L;
+			else
+				factor = 0L;
+
+			if (factor == 0)
+				return false;
+
+			double result = num * factor;
+			if (double.IsNaN(result) || double.IsInfinity(result) || result < 0)
+				return false;
+
+			if (result >= (double)long.MaxValue)
+			{
+				bytes = long.MaxValue;
+			}
+			else
+			{
+				try
+				{
+					bytes = checked((long)Math.Floor(result));
+				}
+				catch (OverflowException)
+				{
+					bytes = long.MaxValue;
+				}
+			}
+			return true;
 		}
 
 		private static TimeSpan? ParseTimeAsSimple(string value)
