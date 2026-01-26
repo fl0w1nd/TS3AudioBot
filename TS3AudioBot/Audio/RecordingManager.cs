@@ -746,6 +746,15 @@ namespace TS3AudioBot.Audio
 		{
 			if (sender == ClientId.Null || data.IsEmpty)
 				return;
+
+			var self = ts3FullClient.Book.Self();
+			if (self == null)
+				return;
+
+			// Ensure the sender is in the same channel as the bot
+			if (!ts3FullClient.Book.Clients.TryGetValue(sender, out var client) || client.Channel != self.Channel)
+				return;
+
 			lock (recordLock)
 			{
 				if (!isRecording)
