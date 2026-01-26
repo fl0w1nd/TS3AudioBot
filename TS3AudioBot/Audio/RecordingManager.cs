@@ -806,10 +806,11 @@ namespace TS3AudioBot.Audio
 		private bool IsAlone()
 		{
 			var self = ts3FullClient.Book.Self();
-			if (self is null)
+			if (self is null || !self.Uid.HasValue)
 				return true;
 			var ownChannel = self.Channel;
-			var others = ts3FullClient.Book.Clients.Values.Any(c => c.Channel == ownChannel && c != self);
+			var selfUid = self.Uid.Value;
+			var others = ts3FullClient.Book.Clients.Values.Any(c => c.Channel == ownChannel && c != self && c.Uid != selfUid);
 			return !others;
 		}
 
@@ -1294,15 +1295,14 @@ namespace TS3AudioBot.Audio
 		private void RefreshParticipantsSnapshot()
 		{
 			var self = ts3FullClient.Book.Self();
-			if (self is null)
+			if (self is null || !self.Uid.HasValue)
 				return;
 			var ownChannel = self.Channel;
-			foreach (var client in ts3FullClient.Book.Clients.Values)
+			var selfUid = self.Uid.Value;
+			var clients = ts3FullClient.Book.Clients.Values.Where(c => c.Channel == ownChannel && c != self && c.Uid != selfUid).ToList();
+			participants.Clear();
+			foreach (var client in clients)
 			{
-				if (client == self)
-					continue;
-				if (client.Channel != ownChannel)
-					continue;
 				if (client.Uid is null)
 					continue;
 				participants[client.Uid.Value] = client.Name.ToString();
