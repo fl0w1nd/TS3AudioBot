@@ -28,6 +28,7 @@ namespace TSLib.Audio
 		// - Clean up decoders after some time (Control: Tick?)
 		// - Make dispose threadsafe OR redefine thread safety requirements for pipes.
 
+		private readonly object decodersLock = new object();
 		private readonly Dictionary<ClientId, (OpusDecoder, Codec)> decoders = new Dictionary<ClientId, (OpusDecoder, Codec)>();
 		private readonly byte[] decodedBuffer;
 
@@ -53,7 +54,11 @@ namespace TSLib.Audio
 					Span<byte> decodedData;
 					try
 					{
-						var decoder = GetDecoder(meta.In.Sender, Codec.OpusVoice);
+						OpusDecoder decoder;
+						lock (decodersLock)
+						{
+							decoder = GetDecoder(meta.In.Sender, Codec.OpusVoice);
+						}
 						decodedData = decoder.Decode(data, decodedBuffer.AsSpan(0, decodedBuffer.Length / 2));
 					}
 					catch (Exception ex)
@@ -74,7 +79,11 @@ namespace TSLib.Audio
 					Span<byte> decodedData;
 					try
 					{
-						var decoder = GetDecoder(meta.In.Sender, Codec.OpusMusic);
+						OpusDecoder decoder;
+						lock (decodersLock)
+						{
+							decoder = GetDecoder(meta.In.Sender, Codec.OpusMusic);
+						}
 						decodedData = decoder.Decode(data, decodedBuffer);
 					}
 					catch (Exception ex)
@@ -110,10 +119,13 @@ namespace TSLib.Audio
 
 		private void ResetDecoder(ClientId sender)
 		{
-			if (decoders.TryGetValue(sender, out var decoder))
+			lock (decodersLock)
 			{
-				decoder.Item1.Dispose();
-				decoders.Remove(sender);
+				if (decoders.TryGetValue(sender, out var decoder))
+				{
+					decoder.Item1.Dispose();
+					decoders.Remove(sender);
+				}
 			}
 		}
 
@@ -129,9 +141,13 @@ namespace TSLib.Audio
 
 		public void Dispose()
 		{
-			foreach (var (decoder, _) in decoders.Values)
+			lock (decodersLock)
 			{
-				decoder.Dispose();
+				foreach (var (decoder, _) in decoders.Values)
+				{
+					decoder.Dispose();
+				}
+				decoders.Clear();
 			}
 		}
 	}

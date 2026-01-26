@@ -48,7 +48,7 @@ namespace TS3AudioBot.Audio
 
 		public bool Active => !disposed;
 		public long TotalSamples => granulePos;
-		public TimeSpan Duration => TimeSpan.FromSeconds(granulePos / (double)sampleRate);
+		public TimeSpan Duration => TimeSpan.FromSeconds(granulePos / 48000.0);
 
 		public OggOpusWriter(Stream stream, int sampleRate = 48000, int channels = 2, int preSkip = 312, int samplesPerPacket = 960, string? vendor = null)
 		{
@@ -60,6 +60,8 @@ namespace TS3AudioBot.Audio
 				throw new ArgumentOutOfRangeException(nameof(channels));
 			if (preSkip < 0)
 				throw new ArgumentOutOfRangeException(nameof(preSkip));
+			if (samplesPerPacket <= 0)
+				throw new ArgumentOutOfRangeException(nameof(samplesPerPacket));
 
 			this.stream = stream;
 			this.sampleRate = sampleRate;
@@ -145,7 +147,11 @@ namespace TS3AudioBot.Audio
 			{
 				int seg = Math.Min(255, remaining);
 				pageSegments.Add((byte)seg);
-				pageData.AddRange(packet.Slice(offset, seg).ToArray());
+				
+				// Optimization: Avoid ToArray() allocation
+				for (int i = 0; i < seg; i++)
+					pageData.Add(packet[offset + i]);
+				
 				remaining -= seg;
 				offset += seg;
 			}
@@ -265,9 +271,7 @@ namespace TS3AudioBot.Audio
 
 		private static byte[] BuildLacing(int length)
 		{
-			int segments = (length + 255) / 255; // Always at least one segment if not handling 0 specifically, but Ogg lacing for length 0 is 1 segment of 0.
-			if (length > 0 && length % 255 == 0) segments++; 
-
+			int segments = (length / 255) + 1;
 			var lacing = new byte[segments];
 			int remaining = length;
 			int i = 0;

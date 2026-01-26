@@ -523,71 +523,82 @@ namespace TS3AudioBot.Audio
 
 		private void StartRecording()
 		{
-			lock (recordLock)
+			if (isRecording || !Enabled)
+				return;
+
+			global::System.IO.FileInfo? newFile = null;
+			System.IO.Stream? newStream = null;
+			OggOpusWriter? newWriter = null;
+			EncoderPipe? newEncoder = null;
+			string? newEntryId = null;
+			DateTime newStartTime = TrimToSecond(DateTime.UtcNow);
+
+			try
 			{
-				if (isRecording || !Enabled)
-					return;
+				newFile = CreateNewRecordingFile(newStartTime);
+				newStream = newFile.Open(System.IO.FileMode.Create, global::System.IO.FileAccess.Write, global::System.IO.FileShare.Read);
+				newWriter = new OggOpusWriter(newStream);
 
-				startTime = TrimToSecond(DateTime.UtcNow);
-				lastFlush = DateTime.UtcNow;
-				lastDbUpdate = DateTime.UtcNow;
-				currentFile = CreateNewRecordingFile(startTime);
+				participants.Clear();
+				RefreshParticipantsSnapshot();
+				var participantsSnapshot = GetParticipantsSnapshot();
+				newEntryId = CreateRecordingEntry(newFile, newStartTime, participantsSnapshot);
 
-				try
+				newEncoder = new EncoderPipe(Codec.OpusMusic)
 				{
-					// Create stream and writer
-					var stream = currentFile.Open(System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read);
-					try
+					Bitrate = Math.Max(1, config.Recording.Bitrate.Value) * 1000
+				};
+				newEncoder.OutStream = newWriter;
+
+				lock (recordLock)
+				{
+					if (isRecording || !Enabled)
 					{
-						writer = new OggOpusWriter(stream);
-					}
-					catch
-					{
-						stream.Dispose();
-						throw;
+						// Already started or disabled during preparation
+						throw new OperationCanceledException("Recording already started or disabled during preparation");
 					}
 
-					participants.Clear();
-					RefreshParticipantsSnapshot();
-					currentEntryId = CreateRecordingEntry(currentFile, TrimToSecond(DateTime.UtcNow), GetParticipantsSnapshot());
+					startTime = newStartTime;
+					lastFlush = DateTime.UtcNow;
+					lastDbUpdate = DateTime.UtcNow;
+					currentFile = newFile;
+					writer = newWriter;
+					encoder = newEncoder;
+					currentEntryId = newEntryId;
 
-					// Create encoder
-					try
-					{
-						encoder = new EncoderPipe(Codec.OpusMusic)
-						{
-							Bitrate = Math.Max(1, config.Recording.Bitrate.Value) * 1000
-						};
-					}
-					catch
-					{
-						writer.Dispose();
-						writer = null;
-						// Clean up file if we failed to create encoder
-						try
-						{
-							currentFile.Delete();
-						}
-						catch (Exception ex)
-						{
-							Log.Warn(ex, "Failed to delete empty recording file after encoder creation failure");
-						}
-						currentFile = null;
-						throw;
-					}
-
-					encoder.OutStream = writer;
 					mixBuffer = new byte[encoder.PacketSize];
 					tmpBuffer = new byte[encoder.PacketSize];
 					accBuffer = new int[encoder.PacketSize / 2];
+					
 					isRecording = true;
 					mixTicker?.Enable();
-					Log.Info("Recording started: {0}", currentFile.FullName);
+
+					// Prevent cleanup in finally
+					newStream = null;
+					newWriter = null;
+					newEncoder = null;
+					newFile = null;
 				}
-				catch (Exception ex)
-				{
+
+				Log.Info("Recording started: {0}", currentFile!.FullName);
+			}
+			catch (Exception ex)
+			{
+				if (!(ex is OperationCanceledException))
 					Log.Error(ex, "Failed to start recording");
-					// Cleanup is handled in catch blocks above or implicitly by strict state management
+
+				newEncoder?.Dispose();
+				newWriter?.Dispose();
+				newStream?.Dispose();
+
+				if (newFile != null)
+				{
+					try { if (newFile.Exists) newFile.Delete(); } catch { }
+				}
+
+				if (newEntryId != null)
+				{
+					try { recordingTable.Delete(newEntryId); } catch { }
 				}
 			}
 		}
@@ -660,11 +671,7 @@ namespace TS3AudioBot.Audio
 
 			var frameSize = encoder.PacketSize;
 			Array.Clear(accBuffer, 0, accBuffer.Length);
-
 			int contributors = 0;
-			EncoderPipe? localEncoder;
-			OggOpusWriter? localWriter;
-			byte[]? localMixBuffer;
 
 			// Check rotation condition outside the main mix lock if possible, or inside?
 			// To avoid blocking the mix lock with IO, we check condition then perform rotation separately.
@@ -684,11 +691,11 @@ namespace TS3AudioBot.Audio
 
 			lock (recordLock)
 			{
+				if (!isRecording || encoder is null || mixBuffer is null || tmpBuffer is null || accBuffer is null)
+					return;
+
 				// Re-read shared state after potential rotation
 				now = DateTime.UtcNow;
-				localEncoder = encoder;
-				localWriter = writer;
-				localMixBuffer = mixBuffer;
 
 				MaybeScheduleStopIfAlone(now);
 				var remove = new List<ClientId>();
@@ -724,25 +731,25 @@ namespace TS3AudioBot.Audio
 						outPcm[i] = (short)Math.Max(Math.Min(accBuffer[i], short.MaxValue), short.MinValue);
 				}
 				
-				if (localWriter != null)
-					currentDurationOverride = localWriter.Duration;
-			}
+				if (writer != null)
+					currentDurationOverride = writer.Duration;
 
-			if (localEncoder != null && localMixBuffer != null)
-			{
-				localEncoder.Write(localMixBuffer, null);
-				MaybeFlushWriter(DateTime.UtcNow, localWriter);
+				if (encoder != null && mixBuffer != null)
+				{
+					encoder.Write(mixBuffer, null);
+					MaybeFlushWriter(DateTime.UtcNow, writer);
+				}
 			}
 		}
 
 		private void PushPcm(ClientId sender, ReadOnlySpan<byte> data)
 		{
-			if (!isRecording)
-				return;
-			if (sender == ClientId.Null)
+			if (sender == ClientId.Null || data.IsEmpty)
 				return;
 			lock (recordLock)
 			{
+				if (!isRecording)
+					return;
 				if (!senderBuffers.TryGetValue(sender, out var buffer))
 				{
 					buffer = new PcmBuffer();
@@ -969,16 +976,16 @@ namespace TS3AudioBot.Audio
 
 		private void RotateRecording(DateTime now)
 		{
-			// Prepare new recording state outside lock
-			DateTime newStartTime = TrimToSecond(now);
-			global::System.IO.FileInfo newFile = CreateNewRecordingFile(newStartTime);
-			Stream? newStream = null;
+			global::System.IO.FileInfo? newFile = null;
+			System.IO.Stream? newStream = null;
 			OggOpusWriter? newWriter = null;
 			string? newEntryId = null;
+			DateTime newStartTime = TrimToSecond(now);
 
 			try
 			{
-				newStream = newFile.Open(System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read);
+				newFile = CreateNewRecordingFile(newStartTime);
+				newStream = newFile.Open(System.IO.FileMode.Create, global::System.IO.FileAccess.Write, global::System.IO.FileShare.Read);
 				newWriter = new OggOpusWriter(newStream);
 
 				// Snapshot participants for DB entry (requires lock or safe copy)
@@ -987,23 +994,18 @@ namespace TS3AudioBot.Audio
 				{
 					participantsSnapshot = GetParticipantsSnapshot();
 				}
-
 				newEntryId = CreateRecordingEntry(newFile, newStartTime, participantsSnapshot);
 
-				// Swap state inside lock
 				global::System.IO.FileInfo? oldFile = null;
 				OggOpusWriter? oldWriter = null;
 				string? oldEntryId = null;
-				DateTime oldStartTime;
-				TimeSpan? oldDuration = null;
+				TimeSpan oldDuration = TimeSpan.Zero;
 
 				lock (recordLock)
 				{
 					if (!isRecording)
 					{
 						// Recording stopped while we were preparing, abort rotation
-						// Cleanup handled in catch/finally of the preparation
-						// Throwing here to trigger cleanup
 						throw new OperationCanceledException("Recording stopped during rotation");
 					}
 
@@ -1011,8 +1013,7 @@ namespace TS3AudioBot.Audio
 					oldFile = currentFile;
 					oldWriter = writer;
 					oldEntryId = currentEntryId;
-					oldStartTime = startTime;
-					oldDuration = writer?.Duration ?? currentDurationOverride;
+					oldDuration = writer?.Duration ?? currentDurationOverride ?? TimeSpan.Zero;
 
 					// Assign new state
 					currentFile = newFile;
@@ -1023,10 +1024,10 @@ namespace TS3AudioBot.Audio
 					if (encoder != null)
 						encoder.OutStream = writer;
 					
-					// Clear disposables so they aren't disposed in finally
+					// Prevent cleanup in finally
 					newStream = null; 
 					newWriter = null; 
-					newFile = default; // Don't delete on success
+					newFile = default; 
 				}
 
 				Log.Info("Recording continued (new segment): {0}", currentFile!.FullName);
@@ -1043,26 +1044,17 @@ namespace TS3AudioBot.Audio
 				if (!(ex is OperationCanceledException))
 					Log.Error(ex, "Failed to rotate recording");
 
-				// Cleanup new resources if we failed or aborted
-				newWriter?.Dispose(); // Closes stream
+				newWriter?.Dispose(); 
 				newStream?.Dispose();
 
 				if (newFile != null)
 				{
-					try
-					{
-						if (newFile.Exists) newFile.Delete();
-					}
-					catch { }
+					try { if (newFile.Exists) newFile.Delete(); } catch { }
 				}
 
 				if (newEntryId != null)
 				{
-					try
-					{
-						recordingTable.Delete(newEntryId);
-					}
-					catch { }
+					try { recordingTable.Delete(newEntryId); } catch { }
 				}
 			}
 		}
