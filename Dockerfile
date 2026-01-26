@@ -25,8 +25,13 @@ LABEL supportUrl="https://github.com/Splamy/TS3AudioBot/issues"
 LABEL os="Linux"
 LABEL arch="x64"
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl openssl libopus0 \
+# Debian buster is EOL; use archive mirrors to keep apt working.
+RUN sed -i 's|http://deb.debian.org/debian|http://archive.debian.org/debian|g' /etc/apt/sources.list \
+    && sed -i 's|http://security.debian.org/debian-security|http://archive.debian.org/debian-security|g' /etc/apt/sources.list \
+    && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg curl openssl libopus-dev \
+    && (ldconfig || true) \
     && rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/*
 
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/youtube-dl \

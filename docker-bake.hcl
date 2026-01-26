@@ -28,6 +28,7 @@ target "app" {
 target "local" {
   inherits = ["app"]
   platforms = []
+  output = ["type=docker"]
   cache-from = ["type=local,src=/tmp/.buildx-cache"]
   cache-to   = ["type=local,dest=/tmp/.buildx-cache-new,mode=max"]
 }

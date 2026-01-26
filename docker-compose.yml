@@ -1,0 +1,8 @@
+services:
+  ts3audiobot:
+    image: ghcr.io/fl0w1nd/ts3audiobot:latest
+    container_name: ts3audiobot
+    ports:
+      - "58913:58913"
+    volumes:
+      - ./data:/data
