@@ -20,6 +20,10 @@
   ],
   "author": "Splamy",
   "license": "OSL-3.0",
+  "engines": {
+    "node": "22.x",
+    "npm": "10.x || 11.x"
+  },
   "dependencies": {
     "@vueuse/core": "^12.5.0",
     "floating-vue": "^5.2.2",
