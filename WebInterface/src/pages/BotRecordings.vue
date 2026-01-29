@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
-import { Card, Button, Icon, Input, Table } from '@/components/ui'
+import { ref, computed, inject, onMounted, onBeforeUnmount, watch } from 'vue'
+import { Card, Button, Icon, Input, AudioPlayer } from '@/components/ui'
 import { cmd, bot, isError, getErrorMessage, api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
 import type { CmdRecordingInfo, CmdRecordingStatus, CmdRecordingParticipant } from '@/api/types'
@@ -17,11 +17,7 @@ const userQuery = ref('')
 const selectedUids = ref<string[]>([])
 const todayStr = formatLocalDate(new Date())
 const filterDate = ref(todayStr)
-const playUrl = ref('')
-const isPlaying = ref(false)
-const currentTime = ref(0)
-const duration = ref(0)
-const audioRef = ref<HTMLAudioElement | null>(null)
+const expandedRecordingId = ref<string | null>(null)
 const showCalendar = ref(false)
 const calendarMonth = ref(new Date())
 const datePickerRef = ref<HTMLElement | null>(null)
@@ -256,17 +252,21 @@ async function downloadRecording(rec: CmdRecordingInfo) {
   }
 }
 
-function playRecording(rec: CmdRecordingInfo) {
+function toggleRecordingPlayer(rec: CmdRecordingInfo) {
   if (rec.IsOpen) return
-  playUrl.value = getDownloadUrl(rec.Id)
-  duration.value = parseDurationString(rec.Duration) ?? 0
-  currentTime.value = 0
-  nextTick(() => {
-    const audio = audioRef.value
-    if (!audio) return
-    audio.load()
-    audio.play().catch(() => {})
-  })
+  if (expandedRecordingId.value === rec.Id) {
+    expandedRecordingId.value = null
+  } else {
+    expandedRecordingId.value = rec.Id
+  }
+}
+
+function getPlayUrl(rec: CmdRecordingInfo): string {
+  return getDownloadUrl(rec.Id)
+}
+
+function getPlayDuration(rec: CmdRecordingInfo): number {
+  return parseDurationString(rec.Duration) ?? 0
 }
 
 function formatDate(value: string): string {
@@ -421,60 +421,8 @@ function formatDurationValue(value: string | number | null): string | null {
   return Number.isNaN(secs) ? null : formatSeconds(secs)
 }
 
-function togglePlayback() {
-  const audio = audioRef.value
-  if (!audio) return
-  if (audio.paused) {
-    audio.play().catch(() => {})
-  } else {
-    audio.pause()
-  }
-}
-
-function onTimeUpdate() {
-  const audio = audioRef.value
-  if (!audio) return
-  currentTime.value = audio.currentTime || 0
-  duration.value = audio.duration || 0
-}
-
-function onLoadedMeta() {
-  const audio = audioRef.value
-  if (!audio) return
-  if (isFinite(audio.duration) && audio.duration > 0) {
-    duration.value = audio.duration
-  }
-}
-
-function onPlay() {
-  isPlaying.value = true
-}
-
-function onPause() {
-  isPlaying.value = false
-}
-
-function seek(event: Event) {
-  const audio = audioRef.value
-  if (!audio) return
-  const target = event.target as HTMLInputElement
-  const value = parseFloat(target.value)
-  if (!isNaN(value)) audio.currentTime = value
-}
-
-function stopPlayback() {
-  const audio = audioRef.value
-  if (audio) {
-    audio.pause()
-    audio.currentTime = 0
-  }
-}
-
 function closePlayer() {
-  stopPlayback()
-  playUrl.value = ''
-  duration.value = 0
-  currentTime.value = 0
+  expandedRecordingId.value = null
 }
 
 function setFilterDate(date: string) {
@@ -696,15 +644,6 @@ onBeforeUnmount(() => {
   closePlayer()
 })
 
-const columns = [
-  { key: 'Start', label: 'Start' },
-  { key: 'End', label: 'End' },
-  { key: 'Duration', label: 'Duration', width: '100px' },
-  { key: 'Size', label: 'Size', width: '100px' },
-  { key: 'Participants', label: 'Users', width: '120px' },
-  { key: 'actions', label: '', width: '120px', align: 'right' as const },
-]
-
 onMounted(() => {
   applyFilters()
 })
@@ -899,70 +838,85 @@ watch(
     </Card>
 
     <!-- Recordings List -->
-    <Card padding="none">
-      <Table
-        :data="pagedRecordings"
-        :columns="columns"
-        :loading="loading"
-        empty-text="No recordings available"
-      >
-        <template #Start="{ row }">
-          {{ formatDate(row.Start) }}
-        </template>
-        
-        <template #End="{ row }">
-          {{ formatEnd(row) }}
-        </template>
-        
-        <template #Duration="{ row }">
-          {{ formatRecDuration(row) }}
-        </template>
-        
-        <template #Size="{ row }">
-          {{ formatBytes(row.Size) }}
-        </template>
-
-        <template #Participants="{ row }">
-          <div class="participants">
-            <span
-              v-for="p in (row.Participants || [])"
-              :key="p.Uid"
-              class="participant"
-              :title="p.Name"
-            >
-              {{ getInitials(p.Name) }}
+    <Card padding="none" class="recordings-list">
+      <!-- Header -->
+      <div class="list-header">
+        <span class="col-start">Start</span>
+        <span class="col-end">End</span>
+        <span class="col-duration">Duration</span>
+        <span class="col-size">Size</span>
+        <span class="col-participants">Participants</span>
+        <span class="col-actions">Actions</span>
+      </div>
+      
+      <!-- Loading -->
+      <template v-if="loading">
+        <div v-for="i in 3" :key="i" class="list-row loading-row">
+          <div class="skeleton animate-shimmer" />
+        </div>
+      </template>
+      
+      <!-- Empty -->
+      <div v-else-if="pagedRecordings.length === 0" class="list-empty">
+        No recordings available
+      </div>
+      
+      <!-- Rows -->
+      <template v-else>
+        <template v-for="row in pagedRecordings" :key="row.Id">
+          <div
+            class="list-row"
+            :class="{ expanded: expandedRecordingId === row.Id, 'is-open': row.IsOpen }"
+            @click="toggleRecordingPlayer(row)"
+          >
+            <span class="col-start">{{ formatDate(row.Start) }}</span>
+            <span class="col-end">{{ formatEnd(row) }}</span>
+            <span class="col-duration">{{ formatRecDuration(row) }}</span>
+            <span class="col-size">{{ formatBytes(row.Size) }}</span>
+            <span class="col-participants">
+              <div class="participants">
+                <span
+                  v-for="p in (row.Participants || [])"
+                  :key="p.Uid"
+                  class="participant"
+                  :title="p.Name"
+                >
+                  {{ getInitials(p.Name) }}
+                </span>
+              </div>
+            </span>
+            <span class="col-actions" @click.stop>
+              <div class="row-actions">
+                <button 
+                  class="action-btn"
+                  title="Download"
+                  :disabled="row.IsOpen"
+                  @click="downloadRecording(row)"
+                >
+                  <Icon name="download" :size="14" />
+                </button>
+                <button 
+                  class="action-btn action-btn-danger"
+                  title="Delete"
+                  :disabled="row.IsOpen"
+                  @click="deleteRecording(row.Id)"
+                >
+                  <Icon name="trash" :size="14" />
+                </button>
+              </div>
             </span>
           </div>
-        </template>
-        
-        <template #actions="{ row }">
-          <div class="row-actions">
-            <button 
-              class="action-btn"
-              title="Play"
-              @click="playRecording(row)"
-            >
-              <Icon name="play" :size="14" />
-            </button>
-            <button 
-              class="action-btn"
-              title="Download"
-              :disabled="row.IsOpen"
-              @click="downloadRecording(row)"
-            >
-              <Icon name="download" :size="14" />
-            </button>
-            <button 
-              class="action-btn action-btn-danger"
-              title="Delete"
-              :disabled="row.IsOpen"
-              @click="deleteRecording(row.Id)"
-            >
-              <Icon name="trash" :size="14" />
-            </button>
+          
+          <!-- Expanded Player -->
+          <div v-if="expandedRecordingId === row.Id" class="player-row">
+            <AudioPlayer
+              :src="getPlayUrl(row)"
+              :initial-duration="getPlayDuration(row)"
+              @close="closePlayer"
+            />
           </div>
         </template>
-      </Table>
+      </template>
     </Card>
 
     <div class="pagination">
@@ -974,47 +928,6 @@ watch(
         Next
       </Button>
     </div>
-
-    <!-- Audio Player -->
-    <Card v-if="playUrl" padding="md" class="audio-player">
-      <div class="player-header">
-        <span>
-          Playback
-        </span>
-        <Button variant="ghost" color="neutral" size="sm" icon-only @click="closePlayer">
-          <Icon name="x" :size="14" />
-        </Button>
-      </div>
-      <div class="player-controls">
-        <button class="play-btn" @click="togglePlayback">
-          <Icon :name="isPlaying ? 'pause' : 'play'" :size="16" />
-        </button>
-        <div class="time">
-          <span>{{ formatSeconds(currentTime) }}</span>
-          <span class="sep">/</span>
-          <span>{{ formatSeconds(duration) }}</span>
-        </div>
-      </div>
-      <input
-        class="progress"
-        type="range"
-        min="0"
-        :max="duration || 0"
-        :value="currentTime"
-        :disabled="!duration"
-        @input="seek"
-      />
-      <audio
-        ref="audioRef"
-        :src="playUrl"
-        preload="none"
-        class="audio-element"
-        @timeupdate="onTimeUpdate"
-        @loadedmetadata="onLoadedMeta"
-        @play="onPlay"
-        @pause="onPause"
-      ></audio>
-    </Card>
   </div>
 </template>
 
@@ -1378,7 +1291,98 @@ watch(
   font-variant-numeric: tabular-nums;
 }
 
-/* Table */
+/* Recordings List */
+.recordings-list {
+  overflow: hidden;
+}
+
+.list-header {
+  display: grid;
+  grid-template-columns: 1fr 1fr 80px 80px 100px 80px;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-fg-muted);
+  background: var(--color-bg-inset);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.list-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 80px 80px 100px 80px;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  font-size: 13px;
+  border-bottom: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: background 0.1s ease-out;
+}
+
+.list-row:hover {
+  background: var(--color-bg-inset);
+}
+
+.list-row.expanded {
+  background: var(--color-accent-muted);
+  border-bottom-color: transparent;
+}
+
+.list-row.is-open {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.list-row > span {
+  display: flex;
+  align-items: center;
+}
+
+.col-duration,
+.col-size {
+  font-variant-numeric: tabular-nums;
+}
+
+.col-actions {
+  justify-content: flex-end;
+}
+
+.loading-row {
+  cursor: default;
+}
+
+.skeleton {
+  height: 16px;
+  width: 100%;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-inset);
+}
+
+.list-empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--color-fg-subtle);
+}
+
+.player-row {
+  border-bottom: 1px solid var(--color-border);
+  animation: slide-down 0.2s ease-out;
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Row Actions */
 .row-actions {
   display: flex;
   gap: 0.25rem;
@@ -1415,79 +1419,4 @@ watch(
   cursor: not-allowed;
 }
 
-/* Audio Player */
-.audio-player {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.player-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.live-pill {
-  margin-left: 6px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  color: var(--color-success);
-  background: var(--color-success-muted);
-}
-
-.player-controls {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.play-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: none;
-  border-radius: 999px;
-  background: var(--color-bg-inset);
-  color: var(--color-fg);
-  cursor: pointer;
-  transition: transform 0.1s ease-out, background 0.1s ease-out;
-}
-
-.play-btn:hover {
-  transform: translateY(-1px);
-  background: var(--color-bg);
-}
-
-.time {
-  font-size: 12px;
-  color: var(--color-fg-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.sep {
-  margin: 0 6px;
-  opacity: 0.6;
-}
-
-.progress {
-  width: 100%;
-  accent-color: var(--color-success);
-}
-
-.audio-element {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
 </style>

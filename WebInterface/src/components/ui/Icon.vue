@@ -2,12 +2,12 @@
 import { computed } from 'vue'
 import {
   Home, Bot, Settings, Server, List, ListMusic, Music, Mic,
-  Play, Pause, Square, SkipBack, SkipForward, Repeat, Repeat1, Shuffle, Volume, Volume2, VolumeX,
+  Play, Pause, Square, SkipBack, SkipForward, Repeat, Repeat1, Shuffle, Volume, Volume1, Volume2, VolumeX,
   Plus, Minus, X, Check, Pencil, Trash2, Download, Upload, Search, MoreHorizontal, Link, ExternalLink, Copy,
   CircleCheck, CircleX, Loader2, TriangleAlert, CircleAlert, Info,
   ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowLeft, ArrowRight,
   FileAudio, Youtube, Twitch, GripVertical, LogIn, Cpu,
-  Moon, Sun, RefreshCw,
+  Moon, Sun, RefreshCw, RotateCcw, RotateCw,
 } from 'lucide-vue-next'
 
 interface Props {
@@ -46,8 +46,14 @@ const lucideIcons: Record<string, any> = {
   'repeat-one': Repeat1,
   'shuffle': Shuffle,
   'volume': Volume,
+  'volume-1': Volume1,
+  'volume-2': Volume2,
+  'volume-x': VolumeX,
   'volume-high': Volume2,
   'volume-mute': VolumeX,
+  'rotate-ccw': RotateCcw,
+  'rotate-cw': RotateCw,
+  'loader': Loader2,
   
   // Actions
   'plus': Plus,
