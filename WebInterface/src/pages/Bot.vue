@@ -145,6 +145,11 @@ watch(() => route.params.id, () => {
         >
           {{ info.botInfo.Status === BotStatus.Connected ? 'Connected' : info.botInfo.Status === BotStatus.Connecting ? 'Connecting' : 'Offline' }}
         </Badge>
+        <span v-if="online && info.botInfo.Id !== null" class="bot-meta">
+          <span class="bot-meta-item">ID: {{ info.botInfo.Id }}</span>
+          <span v-if="info.botInfo.Server" class="bot-meta-divider">|</span>
+          <span v-if="info.botInfo.Server" class="bot-meta-item">{{ info.botInfo.Server }}</span>
+        </span>
       </div>
     </div>
 
@@ -179,21 +184,6 @@ watch(() => route.params.id, () => {
 
       <!-- Sidebar -->
       <aside v-if="online" class="bot-sidebar">
-        <!-- Bot Info Card -->
-        <Card padding="md" class="sidebar-card">
-          <h3 class="sidebar-title">Bot Info</h3>
-          <div class="info-grid">
-            <div class="info-item">
-              <span class="info-label">ID</span>
-              <span class="info-value">{{ info.botInfo.Id ?? 'N/A' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Server</span>
-              <span class="info-value">{{ info.botInfo.Server || '-' }}</span>
-            </div>
-          </div>
-        </Card>
-
         <!-- Quick Play Card -->
         <Card padding="md" class="sidebar-card">
           <h3 class="sidebar-title">Quick Play</h3>
@@ -327,7 +317,8 @@ watch(() => route.params.id, () => {
 .bot-title-row {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .bot-title {
@@ -337,19 +328,61 @@ watch(() => route.params.id, () => {
   letter-spacing: -0.02em;
 }
 
+.bot-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 13px;
+  color: var(--color-fg-muted);
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--color-border);
+  margin-left: 0.25rem;
+}
+
+.bot-meta-item {
+  font-variant-numeric: tabular-nums;
+}
+
+.bot-meta-divider {
+  color: var(--color-fg-subtle);
+}
+
 /* Layout */
 .bot-layout {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  grid-template-columns: 1fr var(--bot-sidebar-width);
   gap: 1.5rem;
 }
 
+/* Large screens: full layout */
+@media (max-width: 1280px) {
+  .bot-layout {
+    grid-template-columns: 1fr 280px;
+  }
+}
+
+/* Tablet: hide bot sidebar */
 @media (max-width: 1024px) {
   .bot-layout {
     grid-template-columns: 1fr;
   }
   
   .bot-sidebar {
+    display: none;
+  }
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .bot-page {
+    gap: 1rem;
+  }
+  
+  .bot-title {
+    font-size: 1.5rem;
+  }
+  
+  .bot-meta {
     display: none;
   }
 }
@@ -362,6 +395,8 @@ watch(() => route.params.id, () => {
   background: var(--color-bg-inset);
   border-radius: var(--radius-lg);
   margin-bottom: 1rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .bot-tab {
@@ -379,6 +414,7 @@ watch(() => route.params.id, () => {
   cursor: pointer;
   transition: all 0.15s ease-out;
   justify-content: center;
+  white-space: nowrap;
 }
 
 .bot-tab:hover:not(:disabled) {
@@ -394,6 +430,17 @@ watch(() => route.params.id, () => {
 .bot-tab-disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+  .bot-tab {
+    flex: 0 0 auto;
+    padding: 0.5rem 0.75rem;
+  }
+  
+  .bot-tab span {
+    display: none;
+  }
 }
 
 /* Sidebar */
@@ -452,20 +499,17 @@ watch(() => route.params.id, () => {
 }
 
 /* Now Playing */
-.now-playing-card {
-  gap: 1rem !important;
-}
-
 .now-playing {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 0.75rem;
 }
 
 .now-playing-cover {
   position: relative;
-  width: 100%;
-  aspect-ratio: 1;
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
   border-radius: var(--radius-md);
   background: var(--color-bg-inset);
   overflow: hidden;
@@ -491,6 +535,7 @@ watch(() => route.params.id, () => {
 
 .now-playing-info {
   min-width: 0;
+  flex: 1;
 }
 
 .now-playing-title {

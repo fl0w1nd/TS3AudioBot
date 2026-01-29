@@ -91,11 +91,26 @@
 
   /* Layout */
   --sidebar-width: 240px;
+  --sidebar-collapsed-width: 64px;
+  --bot-sidebar-width: 320px;
+  
+  /* Breakpoints reference:
+     - xl: > 1280px (full layout)
+     - lg: 1024px - 1280px (collapsed sidebar)
+     - md: 768px - 1024px (no bot sidebar)
+     - sm: < 768px (mobile, hidden sidebar with hamburger)
+  */
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 1280px) {
   :root {
     --sidebar-width: 64px;
+  }
+}
+
+@media (max-width: 768px) {
+  :root {
+    --sidebar-width: 0px;
   }
 }
 

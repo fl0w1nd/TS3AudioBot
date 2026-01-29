@@ -34,6 +34,7 @@ useTheme()
   padding: 2rem;
   max-width: 1600px;
   margin: 0 auto;
+  width: 100%;
 }
 
 /* Page transition */
@@ -50,5 +51,20 @@ useTheme()
 .page-leave-to {
   opacity: 0;
   transform: translateY(-10px);
+}
+
+/* Tablet */
+@media (max-width: 1280px) {
+  .main-content {
+    padding: 1.5rem;
+  }
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .main-content {
+    padding: 1rem;
+    padding-top: calc(56px + 1rem); /* Mobile header height + padding */
+  }
 }
 </style>

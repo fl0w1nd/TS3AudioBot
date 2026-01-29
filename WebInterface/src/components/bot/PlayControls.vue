@@ -369,7 +369,7 @@ const volumeIcon = computed(() => {
   position: fixed;
   bottom: 0;
   left: var(--sidebar-width);
-  right: 0;
+  right: calc(var(--bot-sidebar-width) + 1.5rem);
   z-index: 100;
   background: var(--color-bg-overlay);
   backdrop-filter: blur(16px) saturate(180%);
@@ -379,12 +379,36 @@ const volumeIcon = computed(() => {
 }
 
 .controls-inner {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
   gap: 1.5rem;
   align-items: center;
-  max-width: 1400px;
-  margin: 0 auto;
+}
+
+/* Large screens */
+@media (max-width: 1280px) {
+  .play-controls {
+    right: calc(280px + 1.5rem);
+  }
+}
+
+/* Tablet: no bot sidebar */
+@media (max-width: 1024px) {
+  .play-controls {
+    right: 0;
+  }
+}
+
+/* Mobile */
+@media (max-width: 768px) {
+  .play-controls {
+    left: 0;
+    right: 0;
+    padding: 0.5rem 1rem;
+  }
+  
+  .controls-inner {
+    gap: 0.75rem;
+  }
 }
 
 /* Song Info */
@@ -392,7 +416,9 @@ const volumeIcon = computed(() => {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  min-width: 0;
+  min-width: 180px;
+  max-width: 240px;
+  flex-shrink: 0;
 }
 
 .song-icon {
@@ -431,25 +457,25 @@ const volumeIcon = computed(() => {
 /* Main Controls */
 .controls-main {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.5rem;
+  gap: 1rem;
+  flex: 1;
+  min-width: 0;
 }
 
 .controls-buttons {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  flex-shrink: 0;
 }
 
 .controls-progress {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  width: 100%;
-  min-width: 200px;
-  max-width: 600px;
   flex: 1;
+  min-width: 0;
 }
 
 .progress-bar-wrapper {
@@ -468,8 +494,8 @@ const volumeIcon = computed(() => {
 .controls-secondary {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   gap: 0.25rem;
+  flex-shrink: 0;
 }
 
 .control-active {
@@ -486,15 +512,18 @@ const volumeIcon = computed(() => {
   width: 100px;
 }
 
-@media (max-width: 768px) {
-  .controls-inner {
-    grid-template-columns: 1fr;
-    gap: 0.75rem;
+/* Small mobile: simplified controls */
+@media (max-width: 480px) {
+  .controls-song {
+    display: none;
   }
   
-  .controls-song,
   .controls-secondary {
     display: none;
+  }
+  
+  .controls-main {
+    flex: 1;
   }
 }
 </style>
