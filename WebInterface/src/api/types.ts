@@ -129,11 +129,22 @@ export interface CmdRecordingInfo {
   Duration: string | null
   IsOpen: boolean
   Participants?: CmdRecordingParticipant[]
+  Waveforms?: CmdRecordingWaveformInfo[]
 }
 
 export interface CmdRecordingParticipant {
   Uid: string
   Name: string
+}
+
+export interface CmdRecordingWaveformInfo {
+  Uid: string
+  Name: string
+  SampleRate: number
+  Samples: number
+  MaxSample: number
+  SizeBytes: number
+  FileId: string
 }
 
 export interface CmdRecordingStatus {

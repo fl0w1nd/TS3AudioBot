@@ -8,6 +8,7 @@
 // program. If not, see <https://opensource.org/licenses/OSL-3.0>.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -35,8 +36,13 @@ namespace TS3AudioBot.Audio
 		private static readonly TimeSpan MixInterval = TimeSpan.FromMilliseconds(20);
 		private static readonly TimeSpan SenderTimeout = TimeSpan.FromSeconds(30);
 		private static readonly TimeSpan MaxSegmentDuration = TimeSpan.FromHours(1);
+		private static readonly TimeSpan WaveformFlushInterval = TimeSpan.FromSeconds(1);
 		private const string RecordingTableName = "recordings";
-		private const int RecordingSchemaVersion = 1;
+		private const int RecordingSchemaVersion = 2;
+		private const int WaveformSampleRate = 50; // 20ms ticks
+		private const int WaveformHeaderSize = 16; // "TSWF" + version/flags/reserved + sampleRate + sampleCount
+		private static readonly Uid MixedWaveformUid = new Uid("mixed");
+		private const string MixedWaveformName = "Mixed";
 
 		private readonly ConfBot config;
 		private readonly Ts3Client ts3Client;
@@ -61,12 +67,15 @@ namespace TS3AudioBot.Audio
 		private DateTime lastAloneCheck;
 		private DateTime lastFlush;
 		private DateTime lastDbUpdate;
+		private DateTime lastWaveformFlush;
 		private TimeSpan? currentDurationOverride;
 		private bool isRecording;
 		private bool isDisposed;
 		private byte[]? mixBuffer;
 		private byte[]? tmpBuffer;
 		private int[]? accBuffer;
+		private int waveformSampleIndex;
+		private WaveformSet? waveformSet;
 
 		private AsyncEventHandler<AloneChanged>? onAloneChanged;
 		private AsyncEventHandler? onBotConnected;
@@ -92,7 +101,7 @@ namespace TS3AudioBot.Audio
 					if (currentFile is null)
 						return null;
 					MaybeUpdateCurrentEntry(DateTime.UtcNow);
-					return BuildRecordingInfo(currentFile, startTime, null, isOpen: true, currentDurationOverride, GetParticipantsSnapshot());
+					return BuildRecordingInfo(currentFile, startTime, null, isOpen: true, currentDurationOverride, GetParticipantsSnapshot(), GetWaveformsSnapshot());
 				}
 			}
 		}
@@ -303,6 +312,23 @@ namespace TS3AudioBot.Audio
 				CleanupEmptyDirs(file.Directory);
 			}
 
+			if (entry.Waveforms != null && entry.Waveforms.Count > 0)
+			{
+				foreach (var wf in entry.Waveforms)
+				{
+					var wfFile = ResolveRecordingFile(wf.FileId);
+					if (wfFile != null && wfFile.Exists)
+					{
+						try { wfFile.Delete(); } catch { }
+						CleanupEmptyDirs(wfFile.Directory);
+					}
+				}
+			}
+			else if (file != null)
+			{
+				DeleteWaveformFiles(file, null);
+			}
+
 			recordingTable.Delete(entry.Id);
 			return true;
 		}
@@ -379,6 +405,52 @@ namespace TS3AudioBot.Audio
 
 						await System.Threading.Tasks.Task.Delay(250, response.HttpContext.RequestAborted);
 					}
+				}
+				catch (OperationCanceledException)
+				{
+				}
+				catch (IOException)
+				{
+				}
+			});
+		}
+
+		public DataStream OpenWaveformStream(string id, string uid)
+		{
+			var lookupUid = string.IsNullOrWhiteSpace(uid) ? MixedWaveformUid.Value : uid;
+			var file = ResolveWaveformFile(id, lookupUid) ?? throw Error.LocalStr("Waveform not found.");
+			return new DataStream(async response =>
+			{
+				try
+				{
+					response.ContentType = "application/octet-stream";
+					response.Headers["Accept-Ranges"] = "bytes";
+					response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+					response.Headers["Pragma"] = "no-cache";
+					response.Headers["X-Accel-Buffering"] = "no";
+					await using var stream = file.Open(System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite);
+
+					file.Refresh();
+					long totalLength = file.Length;
+					var request = response.HttpContext.Request;
+					if (request.Headers.TryGetValue("Range", out var rangeHeader) && TryParseRange(rangeHeader.ToString(), totalLength, out var rangeStart, out var rangeEnd))
+					{
+						response.StatusCode = StatusCodes.Status206PartialContent;
+						response.Headers["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{totalLength}";
+						response.ContentLength = rangeEnd - rangeStart + 1;
+						stream.Seek(rangeStart, SeekOrigin.Begin);
+						await CopyRangeAsync(stream, response, response.ContentLength.Value, response.HttpContext.RequestAborted);
+						return;
+					}
+					else if (request.Headers.ContainsKey("Range"))
+					{
+						response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+						response.Headers["Content-Range"] = $"bytes */{totalLength}";
+						return;
+					}
+
+					response.ContentLength = totalLength;
+					await stream.CopyToAsync(response.Body, response.HttpContext.RequestAborted);
 				}
 				catch (OperationCanceledException)
 				{
@@ -531,7 +603,7 @@ namespace TS3AudioBot.Audio
 			OggOpusWriter? newWriter = null;
 			EncoderPipe? newEncoder = null;
 			string? newEntryId = null;
-			DateTime newStartTime = TrimToSecond(DateTime.UtcNow);
+			DateTime newStartTime = TrimToSecond(UtcNow());
 
 			try
 			{
@@ -559,8 +631,8 @@ namespace TS3AudioBot.Audio
 					}
 
 					startTime = newStartTime;
-					lastFlush = DateTime.UtcNow;
-					lastDbUpdate = DateTime.UtcNow;
+					lastFlush = UtcNow();
+					lastDbUpdate = UtcNow();
 					currentFile = newFile;
 					writer = newWriter;
 					encoder = newEncoder;
@@ -569,6 +641,10 @@ namespace TS3AudioBot.Audio
 					mixBuffer = new byte[encoder.PacketSize];
 					tmpBuffer = new byte[encoder.PacketSize];
 					accBuffer = new int[encoder.PacketSize / 2];
+					waveformSampleIndex = 0;
+					waveformSet = new WaveformSet(currentFile, WaveformSampleRate);
+					waveformSet.Tracks[MixedWaveformUid] = CreateWaveformTrack(MixedWaveformUid, MixedWaveformName, currentFile, waveformSampleIndex);
+					lastWaveformFlush = UtcNow();
 					
 					isRecording = true;
 					mixTicker?.Enable();
@@ -610,6 +686,7 @@ namespace TS3AudioBot.Audio
 			string? reason;
 			TimeSpan? durationOverride;
 			string? stoppedEntryId;
+			WaveformSet? waveformsToFinalize;
 
 			lock (recordLock)
 			{
@@ -633,15 +710,18 @@ namespace TS3AudioBot.Audio
 				pendingStopReason = null;
 				stoppedEntryId = currentEntryId;
 				currentEntryId = null; 
+				waveformsToFinalize = waveformSet;
+				waveformSet = null;
+				waveformSampleIndex = 0;
 				
-				stopTime = TrimToSecond(DateTime.UtcNow);
+				stopTime = TrimToSecond(UtcNow());
 
 				senderBuffers.Clear();
 			}
 
 			// Run I/O outside lock
 			if (fileToFinalize != null)
-				FinalizeCurrentFile(fileToFinalize, stopTime, reason, durationOverride, stoppedEntryId);
+				FinalizeCurrentFile(fileToFinalize, stopTime, reason, durationOverride, stoppedEntryId, waveformsToFinalize);
 			EnforceMaxSize();
 		}
 
@@ -672,6 +752,7 @@ namespace TS3AudioBot.Audio
 			var frameSize = encoder.PacketSize;
 			Array.Clear(accBuffer, 0, accBuffer.Length);
 			int contributors = 0;
+			Dictionary<Uid, WaveformSample>? rmsSamples = null;
 
 			// Check rotation condition outside the main mix lock if possible, or inside?
 			// To avoid blocking the mix lock with IO, we check condition then perform rotation separately.
@@ -679,7 +760,7 @@ namespace TS3AudioBot.Audio
 			// But the instruction says "RotateRecordingUnsafe is doing heavy file I/O ... refactor so ... happens outside the lock".
 			// So we check first.
 			bool needRotation = false;
-			DateTime now = DateTime.UtcNow;
+			DateTime now = UtcNow();
 			lock (recordLock)
 			{
 				if (isRecording && now - startTime >= MaxSegmentDuration)
@@ -695,9 +776,11 @@ namespace TS3AudioBot.Audio
 					return;
 
 				// Re-read shared state after potential rotation
-				now = DateTime.UtcNow;
+				now = UtcNow();
 
 				MaybeScheduleStopIfAlone(now);
+				if (waveformSet != null)
+					rmsSamples = new Dictionary<Uid, WaveformSample>();
 				var remove = new List<ClientId>();
 				foreach (var kvp in senderBuffers)
 				{
@@ -712,9 +795,20 @@ namespace TS3AudioBot.Audio
 						continue;
 
 					var pcm = MemoryMarshal.Cast<byte, short>(tmpBuffer.AsSpan(0, frameSize));
+					double sumSq = 0;
 					for (int i = 0; i < pcm.Length; i++)
+					{
 						accBuffer[i] += pcm[i];
+						var sample = pcm[i];
+						sumSq += (double)sample * sample;
+					}
 					contributors++;
+
+					if (rmsSamples != null && TryGetClientIdentity(kvp.Key, out var uid, out var name))
+					{
+						var rms = Math.Sqrt(sumSq / pcm.Length) / short.MaxValue;
+						rmsSamples[uid] = new WaveformSample(NormalizeRmsToByte(rms), name, rms);
+					}
 				}
 
 				foreach (var id in remove)
@@ -737,8 +831,21 @@ namespace TS3AudioBot.Audio
 				if (encoder != null && mixBuffer != null)
 				{
 					encoder.Write(mixBuffer, null);
-					MaybeFlushWriter(DateTime.UtcNow, writer);
+					MaybeFlushWriter(UtcNow(), writer);
 				}
+
+				if (rmsSamples != null)
+				{
+					double sumRmsSq = 0;
+					foreach (var sample in rmsSamples.Values)
+						sumRmsSq += sample.Rms * sample.Rms;
+					var mixedRms = Math.Sqrt(sumRmsSq);
+					if (mixedRms > 1) mixedRms = 1;
+					rmsSamples[MixedWaveformUid] = new WaveformSample(NormalizeRmsToByte(mixedRms), MixedWaveformName, mixedRms);
+				}
+
+				if (waveformSet != null)
+					AppendWaveformSamplesLocked(rmsSamples, now);
 			}
 		}
 
@@ -789,8 +896,8 @@ namespace TS3AudioBot.Audio
 			{
 				lock (recordLock)
 				{
-					RefreshParticipantsSnapshot();
-					UpdateCurrentEntryParticipantsLocked(DateTime.UtcNow);
+				RefreshParticipantsSnapshot();
+				UpdateCurrentEntryParticipantsLocked(UtcNow());
 				}
 			}
 			RecheckPartyState();
@@ -849,8 +956,25 @@ namespace TS3AudioBot.Audio
 		{
 			var fileId = BuildFileId(file);
 			var entry = recordingTable.FindOne(x => x.BotId == botId && x.FileId == fileId);
-			if (entry != null)
-				recordingTable.Delete(entry.Id);
+			if (entry == null)
+			{
+				DeleteWaveformFiles(file, null);
+				return;
+			}
+
+			if (entry.Waveforms != null && entry.Waveforms.Count > 0)
+			{
+				foreach (var wf in entry.Waveforms)
+				{
+					var wfFile = ResolveRecordingFile(wf.FileId);
+					if (wfFile != null && wfFile.Exists)
+					{
+						try { wfFile.Delete(); } catch { }
+						CleanupEmptyDirs(wfFile.Directory);
+					}
+				}
+			}
+			recordingTable.Delete(entry.Id);
 		}
 
 		private string BuildFileId(global::System.IO.FileInfo file)
@@ -868,7 +992,8 @@ namespace TS3AudioBot.Audio
 
 		private string CreateRecordingEntry(global::System.IO.FileInfo file, DateTime startUtc, List<RecordingParticipant> participantsList)
 		{
-			var nowUtc = DateTime.UtcNow;
+			startUtc = EnsureUtc(startUtc);
+			var nowUtc = UtcNow();
 			var entry = new RecordingEntry
 			{
 				Id = Guid.NewGuid().ToString("N"),
@@ -927,8 +1052,9 @@ namespace TS3AudioBot.Audio
 
 			if (entry.Participants is null || entry.Participants.Count == 0)
 				entry.Participants = GetParticipantsSnapshot();
+			entry.Waveforms = GetWaveformsSnapshot();
 
-			entry.UpdatedUtc = utcNow;
+			entry.UpdatedUtc = EnsureUtc(utcNow);
 			recordingTable.Update(entry);
 		}
 
@@ -940,11 +1066,11 @@ namespace TS3AudioBot.Audio
 			if (entry is null)
 				return;
 			entry.Participants = GetParticipantsSnapshot();
-			entry.UpdatedUtc = utcNow;
+			entry.UpdatedUtc = EnsureUtc(utcNow);
 			recordingTable.Update(entry);
 		}
 
-		private void UpdateCurrentEntryFinal(global::System.IO.FileInfo file, DateTime endTime, TimeSpan duration, string? dbEntryId)
+		private void UpdateCurrentEntryFinal(global::System.IO.FileInfo file, DateTime endTime, TimeSpan duration, string? dbEntryId, List<RecordingWaveformInfo>? waveforms)
 		{
 			if (dbEntryId == null)
 				return;
@@ -955,12 +1081,14 @@ namespace TS3AudioBot.Audio
 			entry.FileName = file.Name;
 			entry.FileId = BuildFileId(file);
 			entry.IsOpen = false;
-			entry.EndUtc = ToUtc(endTime);
+			entry.EndUtc = EnsureUtc(endTime);
 			entry.DurationMs = (long)duration.TotalMilliseconds;
 			entry.SizeBytes = file.Exists ? file.Length : entry.SizeBytes;
-			entry.UpdatedUtc = DateTime.UtcNow;
+			entry.UpdatedUtc = UtcNow();
 			if (entry.Participants is null || entry.Participants.Count == 0)
 				entry.Participants = GetParticipantsSnapshot();
+			if (waveforms != null)
+				entry.Waveforms = waveforms;
 			recordingTable.Update(entry);
 		}
 
@@ -978,12 +1106,13 @@ namespace TS3AudioBot.Audio
 		private DirectoryInfo GetRecordingDirForNow()
 		{
 			var baseDir = GetRecordingBaseDir();
-			var dayFolder = DateTime.UtcNow.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+			var dayFolder = UtcNow().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 			return new DirectoryInfo(Path.Combine(baseDir.FullName, dayFolder));
 		}
 
 		private global::System.IO.FileInfo CreateNewRecordingFile(DateTime start)
 		{
+			start = EnsureUtc(start);
 			var outDir = GetRecordingDirForNow();
 			outDir.Create();
 			var baseName = $"{start:HH-mm-ss}__open.opus";
@@ -1024,6 +1153,7 @@ namespace TS3AudioBot.Audio
 				global::System.IO.FileInfo? oldFile = null;
 				OggOpusWriter? oldWriter = null;
 				string? oldEntryId = null;
+				WaveformSet? oldWaveforms = null;
 				TimeSpan oldDuration = TimeSpan.Zero;
 
 				lock (recordLock)
@@ -1038,6 +1168,7 @@ namespace TS3AudioBot.Audio
 					oldFile = currentFile;
 					oldWriter = writer;
 					oldEntryId = currentEntryId;
+					oldWaveforms = waveformSet;
 					oldDuration = writer?.Duration ?? currentDurationOverride ?? TimeSpan.Zero;
 
 					// Assign new state
@@ -1045,6 +1176,10 @@ namespace TS3AudioBot.Audio
 					startTime = newStartTime;
 					writer = newWriter;
 					currentEntryId = newEntryId;
+					waveformSampleIndex = 0;
+					waveformSet = new WaveformSet(currentFile, WaveformSampleRate);
+					waveformSet.Tracks[MixedWaveformUid] = CreateWaveformTrack(MixedWaveformUid, MixedWaveformName, currentFile, waveformSampleIndex);
+					lastWaveformFlush = DateTime.UtcNow;
 					
 					if (encoder != null)
 						encoder.OutStream = writer;
@@ -1062,7 +1197,7 @@ namespace TS3AudioBot.Audio
 					oldWriter.Dispose();
 				
 				if (oldFile != null)
-					FinalizeCurrentFile(oldFile, TrimToSecond(now), "max duration reached", oldDuration, oldEntryId);
+					FinalizeCurrentFile(oldFile, TrimToSecond(now), "max duration reached", oldDuration, oldEntryId, oldWaveforms);
 			}
 			catch (Exception ex)
 			{
@@ -1106,7 +1241,7 @@ namespace TS3AudioBot.Audio
 					
 					// If failed, we might still fallback, but precise is preferred.
 					// Pass null for dbEntryId to let FindEntryByFileId resolve it.
-					FinalizeCurrentFile(file, file.LastWriteTimeUtc, "crash recovery", duration, null);
+					FinalizeCurrentFile(file, file.LastWriteTimeUtc, "crash recovery", duration, null, null);
 				}
 			}
 			catch (Exception ex)
@@ -1148,7 +1283,7 @@ namespace TS3AudioBot.Audio
 			return null;
 		}
 
-		private void FinalizeCurrentFile(global::System.IO.FileInfo file, DateTime endTime, string? reason, TimeSpan? durationOverride, string? dbEntryId)
+		private void FinalizeCurrentFile(global::System.IO.FileInfo file, DateTime endTime, string? reason, TimeSpan? durationOverride, string? dbEntryId, WaveformSet? waveforms)
 		{
 			if (!file.Exists)
 				return;
@@ -1195,6 +1330,7 @@ namespace TS3AudioBot.Audio
 				try
 				{
 					file.Delete();
+					DeleteWaveformFiles(file, waveforms);
 					if (entry != null)
 						recordingTable.Delete(entry.Id);
 					
@@ -1216,6 +1352,7 @@ namespace TS3AudioBot.Audio
 			// `BuildFinalPath` splits by `__`. 
 			// So we can derive start time string from filename! Safe.
 
+			var openFileSnapshot = new global::System.IO.FileInfo(file.FullName);
 			var (finalPath, _) = BuildFinalPath(file, endTime);
 			var finalFile = file;
 			try
@@ -1229,8 +1366,10 @@ namespace TS3AudioBot.Audio
 				Log.Warn(ex, "Failed to finalize recording file");
 			}
 
+			var waveformsFinal = FinalizeWaveformFiles(openFileSnapshot, finalFile, waveforms);
+
 			// Use the looked-up entry ID if available
-			UpdateCurrentEntryFinal(finalFile, endTime, duration, entry?.Id);
+			UpdateCurrentEntryFinal(finalFile, endTime, duration, entry?.Id, waveformsFinal);
 
 			if (string.IsNullOrWhiteSpace(reason))
 				Log.Info("Recording stopped: {0}", finalFile.FullName);
@@ -1240,6 +1379,7 @@ namespace TS3AudioBot.Audio
 
 		private static (string finalPath, string finalName) BuildFinalPath(global::System.IO.FileInfo file, DateTime end)
 		{
+			end = EnsureUtc(end);
 			var name = Path.GetFileNameWithoutExtension(file.Name);
 			var parts = name.Split(new[] { "__" }, StringSplitOptions.None);
 			var startPart = parts.Length > 0 ? parts[0] : "unknown_start";
@@ -1337,6 +1477,310 @@ namespace TS3AudioBot.Audio
 			return participants.Select(p => new RecordingParticipant { Uid = p.Key.Value, Name = p.Value }).ToList();
 		}
 
+		private List<RecordingWaveformInfo> GetWaveformsSnapshot()
+		{
+			if (waveformSet is null || waveformSet.Tracks.Count == 0)
+				return new List<RecordingWaveformInfo>();
+			var list = new List<RecordingWaveformInfo>(waveformSet.Tracks.Count);
+			foreach (var track in waveformSet.Tracks.Values)
+			{
+				long size = 0;
+				try
+				{
+					track.File.Refresh();
+					if (track.File.Exists)
+						size = track.File.Length;
+				}
+				catch
+				{
+					size = 0;
+				}
+				list.Add(new RecordingWaveformInfo
+				{
+					Uid = track.Uid.Value,
+					Name = track.Name,
+					SampleRate = track.SampleRate,
+					Samples = track.Samples,
+					MaxSample = track.MaxSample,
+					SizeBytes = size,
+					FileId = BuildFileId(track.File)
+				});
+			}
+			return list;
+		}
+
+		private static byte NormalizeRmsToByte(double rms)
+		{
+			if (double.IsNaN(rms) || double.IsInfinity(rms))
+				return 0;
+			var value = (int)Math.Round(rms * 255.0);
+			if (value < 0) return 0;
+			if (value > 255) return 255;
+			return (byte)value;
+		}
+
+		private bool TryGetClientIdentity(ClientId sender, out Uid uid, out string name)
+		{
+			uid = Uid.Null;
+			name = string.Empty;
+			if (!ts3FullClient.Book.Clients.TryGetValue(sender, out var client) || client.Uid is null)
+				return false;
+			uid = client.Uid.Value;
+			name = client.Name.ToString();
+			return true;
+		}
+
+		private void AppendWaveformSamplesLocked(Dictionary<Uid, WaveformSample>? samples, DateTime utcNow)
+		{
+			if (waveformSet is null)
+				return;
+
+			if (samples != null)
+			{
+				foreach (var kvp in samples)
+				{
+					if (!waveformSet.Tracks.TryGetValue(kvp.Key, out var track))
+					{
+						track = CreateWaveformTrack(kvp.Key, kvp.Value.Name, waveformSet.AudioFile, waveformSampleIndex);
+						waveformSet.Tracks[kvp.Key] = track;
+					}
+					else if (!string.IsNullOrWhiteSpace(kvp.Value.Name))
+					{
+						track.Name = kvp.Value.Name;
+					}
+				}
+			}
+
+			foreach (var track in waveformSet.Tracks.Values)
+			{
+				if (samples != null && samples.TryGetValue(track.Uid, out var sample))
+					track.Append(sample.Value);
+				else
+					track.Append(0);
+			}
+
+			waveformSampleIndex++;
+
+			if (utcNow - lastWaveformFlush >= WaveformFlushInterval)
+			{
+				lastWaveformFlush = utcNow;
+				foreach (var track in waveformSet.Tracks.Values)
+					track.Flush();
+			}
+		}
+
+		private WaveformTrack CreateWaveformTrack(Uid uid, string name, global::System.IO.FileInfo audioFile, int initialSamples)
+		{
+			var safeUid = EncodeUidForFileName(uid.Value);
+			var baseName = Path.GetFileNameWithoutExtension(audioFile.Name);
+			var fileName = BuildWaveformFileName(baseName, safeUid);
+			var path = Path.Combine(audioFile.DirectoryName ?? string.Empty, fileName);
+			var file = new global::System.IO.FileInfo(path);
+			var stream = file.Open(System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read);
+			WriteWaveformHeader(stream, WaveformSampleRate, 0);
+
+			var track = new WaveformTrack(uid, name, safeUid, file, stream, WaveformSampleRate);
+			if (initialSamples > 0)
+				track.WriteZeros(initialSamples);
+			return track;
+		}
+
+		private static string BuildWaveformFileName(string audioBaseName, string safeUid)
+			=> $"{audioBaseName}__{safeUid}.wfm";
+
+		private static string EncodeUidForFileName(string uid)
+			=> Uri.EscapeDataString(uid);
+
+		private static string DecodeUidFromFileName(string token)
+		{
+			try { return Uri.UnescapeDataString(token); }
+			catch { return token; }
+		}
+
+		private static void WriteWaveformHeader(Stream stream, int sampleRate, int sampleCount)
+		{
+			Span<byte> header = stackalloc byte[WaveformHeaderSize];
+			header[0] = (byte)'T';
+			header[1] = (byte)'S';
+			header[2] = (byte)'W';
+			header[3] = (byte)'F';
+			header[4] = 1; // version
+			header[5] = 0; // flags
+			header[6] = 0;
+			header[7] = 0;
+			BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(8, 4), (uint)sampleRate);
+			BinaryPrimitives.WriteUInt32LittleEndian(header.Slice(12, 4), (uint)sampleCount);
+			stream.Seek(0, SeekOrigin.Begin);
+			stream.Write(header);
+		}
+
+		private List<RecordingWaveformInfo> FinalizeWaveformFiles(global::System.IO.FileInfo openAudioFile, global::System.IO.FileInfo finalAudioFile, WaveformSet? waveforms)
+		{
+			var results = new List<RecordingWaveformInfo>();
+			var finalBaseName = Path.GetFileNameWithoutExtension(finalAudioFile.Name);
+
+			if (waveforms != null && waveforms.Tracks.Count > 0)
+			{
+				foreach (var track in waveforms.Tracks.Values)
+				{
+					try
+					{
+						track.FinalizeHeader();
+						track.Dispose();
+						var targetPath = Path.Combine(track.File.DirectoryName ?? string.Empty, BuildWaveformFileName(finalBaseName, track.SafeUid));
+						var resolvedTarget = ResolveFinalPathCollision(targetPath);
+						track.File.MoveTo(resolvedTarget);
+						var finalFile = new global::System.IO.FileInfo(resolvedTarget);
+						results.Add(new RecordingWaveformInfo
+						{
+							Uid = track.Uid.Value,
+							Name = track.Name,
+							SampleRate = track.SampleRate,
+							Samples = track.Samples,
+							MaxSample = track.MaxSample,
+							SizeBytes = finalFile.Exists ? finalFile.Length : 0,
+							FileId = BuildFileId(finalFile)
+						});
+					}
+					catch (Exception ex)
+					{
+						Log.Warn(ex, "Failed to finalize waveform file");
+					}
+				}
+
+				return results;
+			}
+
+			// Fallback: scan orphaned waveform files (e.g., crash recovery)
+			if (openAudioFile.Directory is null || !openAudioFile.Directory.Exists)
+				return results;
+
+			var openBaseName = Path.GetFileNameWithoutExtension(openAudioFile.Name);
+			var pattern = $"{openBaseName}__*.wfm";
+			foreach (var file in openAudioFile.Directory.GetFiles(pattern, SearchOption.TopDirectoryOnly))
+			{
+				try
+				{
+					var uidToken = Path.GetFileNameWithoutExtension(file.Name).Substring(openBaseName.Length + 2);
+					var uid = DecodeUidFromFileName(uidToken);
+					RepairWaveformHeader(file);
+					var targetPath = Path.Combine(file.DirectoryName ?? string.Empty, BuildWaveformFileName(finalBaseName, uidToken));
+					var resolvedTarget = ResolveFinalPathCollision(targetPath);
+					file.MoveTo(resolvedTarget);
+					var finalFile = new global::System.IO.FileInfo(resolvedTarget);
+					var sampleCount = GetWaveformSampleCount(finalFile);
+					var maxSample = ReadWaveformMaxSample(finalFile);
+					results.Add(new RecordingWaveformInfo
+					{
+						Uid = uid,
+						Name = string.Empty,
+						SampleRate = WaveformSampleRate,
+						Samples = sampleCount,
+						MaxSample = maxSample,
+						SizeBytes = finalFile.Exists ? finalFile.Length : 0,
+						FileId = BuildFileId(finalFile)
+					});
+				}
+				catch (Exception ex)
+				{
+					Log.Warn(ex, "Failed to recover waveform file");
+				}
+			}
+
+			return results;
+		}
+
+		private void DeleteWaveformFiles(global::System.IO.FileInfo audioFile, WaveformSet? waveforms)
+		{
+			if (waveforms != null && waveforms.Tracks.Count > 0)
+			{
+				foreach (var track in waveforms.Tracks.Values)
+				{
+					try
+					{
+						track.Dispose();
+						if (track.File.Exists)
+							track.File.Delete();
+					}
+					catch (Exception ex)
+					{
+						Log.Warn(ex, "Failed to delete waveform file");
+					}
+				}
+				CleanupEmptyDirs(audioFile.Directory);
+				return;
+			}
+
+			if (audioFile.Directory is null || !audioFile.Directory.Exists)
+				return;
+
+			var baseName = Path.GetFileNameWithoutExtension(audioFile.Name);
+			foreach (var file in audioFile.Directory.GetFiles($"{baseName}__*.wfm", SearchOption.TopDirectoryOnly))
+			{
+				try { file.Delete(); } catch { }
+			}
+			CleanupEmptyDirs(audioFile.Directory);
+		}
+
+		private static void RepairWaveformHeader(global::System.IO.FileInfo file)
+		{
+			try
+			{
+				if (!file.Exists)
+					return;
+				var sampleCount = GetWaveformSampleCount(file);
+				using var stream = file.Open(System.IO.FileMode.Open, System.IO.FileAccess.ReadWrite, System.IO.FileShare.ReadWrite);
+				WriteWaveformHeader(stream, WaveformSampleRate, sampleCount);
+				stream.Flush();
+			}
+			catch
+			{
+			}
+		}
+
+		private static int GetWaveformSampleCount(global::System.IO.FileInfo file)
+		{
+			try
+			{
+				file.Refresh();
+				if (!file.Exists || file.Length <= WaveformHeaderSize)
+					return 0;
+				var payload = file.Length - WaveformHeaderSize;
+				return payload > int.MaxValue ? int.MaxValue : (int)payload;
+			}
+			catch
+			{
+				return 0;
+			}
+		}
+
+		private static int ReadWaveformMaxSample(global::System.IO.FileInfo file)
+		{
+			try
+			{
+				if (!file.Exists || file.Length <= WaveformHeaderSize)
+					return 0;
+				using var stream = file.Open(System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite);
+				stream.Seek(WaveformHeaderSize, SeekOrigin.Begin);
+				var buffer = new byte[8192];
+				int read;
+				int max = 0;
+				while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+				{
+					for (int i = 0; i < read; i++)
+					{
+						if (buffer[i] > max)
+							max = buffer[i];
+					}
+				}
+				return max;
+			}
+			catch
+			{
+				return 0;
+			}
+		}
+
 		private static string? NormalizeFilter(string? value)
 		{
 			if (string.IsNullOrWhiteSpace(value))
@@ -1402,7 +1846,34 @@ namespace TS3AudioBot.Audio
 			return file.Exists ? file : null;
 		}
 
-		private static RecordingInfo BuildRecordingInfo(global::System.IO.FileInfo? file, DateTime start, DateTime? end, bool isOpen, TimeSpan? durationOverride = null, List<RecordingParticipant>? participants = null)
+		private global::System.IO.FileInfo? ResolveWaveformFile(string id, string uid)
+		{
+			if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(uid))
+				return null;
+
+			lock (recordLock)
+			{
+				if (currentFile != null && BuildFileId(currentFile) == id && waveformSet != null)
+				{
+					var uidKey = new Uid(uid);
+					if (waveformSet.Tracks.TryGetValue(uidKey, out var track))
+						return track.File;
+				}
+			}
+
+			var entry = FindEntryByFileId(id);
+			var waveforms = entry?.Waveforms;
+			if (waveforms != null)
+			{
+				var info = waveforms.FirstOrDefault(w => string.Equals(w.Uid, uid, StringComparison.Ordinal));
+				if (info != null)
+					return ResolveRecordingFile(info.FileId);
+			}
+
+			return null;
+		}
+
+		private static RecordingInfo BuildRecordingInfo(global::System.IO.FileInfo? file, DateTime start, DateTime? end, bool isOpen, TimeSpan? durationOverride = null, List<RecordingParticipant>? participants = null, List<RecordingWaveformInfo>? waveforms = null)
 		{
 			long size = 0;
 			if (file != null)
@@ -1433,18 +1904,19 @@ namespace TS3AudioBot.Audio
 				Size = size,
 				Duration = duration,
 				IsOpen = isOpen,
-				Participants = participants
+				Participants = participants,
+				Waveforms = waveforms
 			};
 		}
 
 		private static RecordingInfo BuildRecordingInfo(RecordingEntry entry)
 		{
-			var startUtc = ToUtc(entry.StartUtc);
+			var startUtc = EnsureUtc(entry.StartUtc);
 			var start = new DateTimeOffset(startUtc, TimeSpan.Zero);
 			DateTimeOffset? end = null;
 			if (entry.EndUtc.HasValue)
 			{
-				var endUtc = ToUtc(entry.EndUtc.Value);
+				var endUtc = EnsureUtc(entry.EndUtc.Value);
 				end = new DateTimeOffset(endUtc, TimeSpan.Zero);
 			}
 			TimeSpan? duration = entry.DurationMs.HasValue ? TimeSpan.FromMilliseconds(entry.DurationMs.Value) : (TimeSpan?)null;
@@ -1458,7 +1930,8 @@ namespace TS3AudioBot.Audio
 				Size = entry.SizeBytes,
 				Duration = duration,
 				IsOpen = entry.IsOpen,
-				Participants = entry.Participants
+				Participants = entry.Participants,
+				Waveforms = entry.Waveforms
 			};
 		}
 
@@ -1480,10 +1953,18 @@ namespace TS3AudioBot.Audio
 		}
 
 		private static DateTime ToUtc(DateTime value)
+			=> EnsureUtc(value);
+
+		private static DateTime UtcNow()
+			=> DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+
+		private static DateTime EnsureUtc(DateTime value)
 		{
-			if (value.Kind == DateTimeKind.Unspecified)
-				value = DateTime.SpecifyKind(value, DateTimeKind.Local);
-			return value.ToUniversalTime();
+			if (value.Kind == DateTimeKind.Utc)
+				return value;
+			if (value.Kind == DateTimeKind.Local)
+				return value.ToUniversalTime();
+			return DateTime.SpecifyKind(value, DateTimeKind.Utc);
 		}
 
 		private sealed class RecordingSink : IAudioPassiveConsumer
@@ -1547,6 +2028,105 @@ namespace TS3AudioBot.Audio
 				return written > 0;
 			}
 		}
+
+		private readonly struct WaveformSample
+		{
+			public WaveformSample(byte value, string name, double rms)
+			{
+				Value = value;
+				Name = name;
+				Rms = rms;
+			}
+
+			public byte Value { get; }
+			public string Name { get; }
+			public double Rms { get; }
+		}
+
+		private sealed class WaveformSet
+		{
+			public WaveformSet(global::System.IO.FileInfo audioFile, int sampleRate)
+			{
+				AudioFile = audioFile;
+				SampleRate = sampleRate;
+				Tracks = new Dictionary<Uid, WaveformTrack>();
+			}
+
+			public global::System.IO.FileInfo AudioFile { get; }
+			public int SampleRate { get; }
+			public Dictionary<Uid, WaveformTrack> Tracks { get; }
+		}
+
+		private sealed class WaveformTrack : IDisposable
+		{
+			private readonly List<byte> pending = new List<byte>(256);
+
+			public WaveformTrack(Uid uid, string name, string safeUid, global::System.IO.FileInfo file, System.IO.FileStream stream, int sampleRate)
+			{
+				Uid = uid;
+				Name = name;
+				SafeUid = safeUid;
+				File = file;
+				Stream = stream;
+				SampleRate = sampleRate;
+			}
+
+			public Uid Uid { get; }
+			public string Name { get; set; }
+			public string SafeUid { get; }
+			public global::System.IO.FileInfo File { get; }
+			public System.IO.FileStream Stream { get; }
+			public int SampleRate { get; }
+			public int Samples { get; private set; }
+			public byte MaxSample { get; private set; }
+
+			public void Append(byte value)
+			{
+				pending.Add(value);
+				Samples++;
+				if (value > MaxSample)
+					MaxSample = value;
+			}
+
+			public void WriteZeros(int count)
+			{
+				if (count <= 0)
+					return;
+				Flush();
+				var buffer = new byte[4096];
+				int remaining = count;
+				while (remaining > 0)
+				{
+					int chunk = Math.Min(buffer.Length, remaining);
+					Stream.Write(buffer, 0, chunk);
+					remaining -= chunk;
+					Samples += chunk;
+				}
+				Stream.Flush();
+			}
+
+			public void Flush()
+			{
+				if (pending.Count == 0)
+					return;
+				var buffer = pending.ToArray();
+				Stream.Write(buffer, 0, buffer.Length);
+				pending.Clear();
+				Stream.Flush();
+			}
+
+			public void FinalizeHeader()
+			{
+				Flush();
+				WriteWaveformHeader(Stream, SampleRate, Samples);
+				Stream.Flush();
+			}
+
+			public void Dispose()
+			{
+				try { Stream.Dispose(); } catch { }
+			}
+		}
 	}
 
 	public class RecordingEntry
@@ -1562,6 +2142,7 @@ namespace TS3AudioBot.Audio
 		public long? DurationMs { get; set; }
 		public bool IsOpen { get; set; }
 		public List<RecordingParticipant> Participants { get; set; } = new List<RecordingParticipant>();
+		public List<RecordingWaveformInfo> Waveforms { get; set; } = new List<RecordingWaveformInfo>();
 		public DateTime CreatedUtc { get; set; }
 		public DateTime UpdatedUtc { get; set; }
 	}
@@ -1575,12 +2156,24 @@ namespace TS3AudioBot.Audio
 		public TimeSpan? Duration { get; set; }
 		public bool IsOpen { get; set; }
 		public List<RecordingParticipant>? Participants { get; set; }
+		public List<RecordingWaveformInfo>? Waveforms { get; set; }
 	}
 
 	public class RecordingParticipant
 	{
 		public string Uid { get; set; } = string.Empty;
 		public string Name { get; set; } = string.Empty;
+	}
+
+	public class RecordingWaveformInfo
+	{
+		public string Uid { get; set; } = string.Empty;
+		public string Name { get; set; } = string.Empty;
+		public int SampleRate { get; set; }
+		public int Samples { get; set; }
+		public int MaxSample { get; set; }
+		public long SizeBytes { get; set; }
+		public string FileId { get; set; } = string.Empty;
 	}
 
 	public class RecordingStatus

@@ -788,6 +788,10 @@ namespace TS3AudioBot
 		public static DataStream CommandRecordingStream(RecordingManager recording, string id)
 			=> recording.OpenRecordingStream(id, follow: true);
 
+		[Command("recording waveform", "cmd_recording_waveform_help")]
+		public static DataStream CommandRecordingWaveform(RecordingManager recording, string id, Uid? uid = null)
+			=> recording.OpenWaveformStream(id, uid?.Value ?? string.Empty);
+
 		[Command("recording delete", "cmd_recording_delete_help")]
 		public static bool CommandRecordingDelete(RecordingManager recording, string id)
 		{

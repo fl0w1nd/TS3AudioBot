@@ -30,6 +30,7 @@ const filterMonth = ref(todayStr.slice(0, 7))
 const filterYear = ref(todayStr.slice(0, 4))
 const showUserDropdown = ref(false)
 const userPickerRef = ref<HTMLElement | null>(null)
+const waveformSelections = ref<Record<string, string>>({})
 const pageSize = 10
 const currentPage = ref(1)
 const totalPages = computed(() => Math.max(1, Math.ceil(displayRecordings.value.length / pageSize)))
@@ -263,6 +264,27 @@ function toggleRecordingPlayer(rec: CmdRecordingInfo) {
 
 function getPlayUrl(rec: CmdRecordingInfo): string {
   return getDownloadUrl(rec.Id)
+}
+
+function getWaveformUrl(rec: CmdRecordingInfo, uid: string): string | null {
+  if (!uid) return null
+  return api.endpoint + bot(cmd('recording', 'waveform', rec.Id, uid), botId.value).toString()
+}
+
+function getWaveformScaleMax(rec: CmdRecordingInfo): number {
+  const mixed = rec.Waveforms?.find(wf => wf.Uid === 'mixed')
+  return mixed?.MaxSample ?? 0
+}
+
+function getSelectedWaveformUid(id: string, rec?: CmdRecordingInfo): string {
+  const selected = waveformSelections.value[id]
+  if (selected) return selected
+  if (rec?.Waveforms?.some(wf => wf.Uid === 'mixed')) return 'mixed'
+  return ''
+}
+
+function setSelectedWaveformUid(id: string, uid: string) {
+  waveformSelections.value = { ...waveformSelections.value, [id]: uid }
 }
 
 function getPlayDuration(rec: CmdRecordingInfo): number {
@@ -909,9 +931,24 @@ watch(
           
           <!-- Expanded Player -->
           <div v-if="expandedRecordingId === row.Id" class="player-row">
+            <div v-if="(row.Waveforms || []).length > 0" class="waveform-filter">
+              <span class="waveform-label">Waveform</span>
+              <select
+                class="select waveform-select"
+                :value="getSelectedWaveformUid(row.Id, row)"
+                @change="setSelectedWaveformUid(row.Id, ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="mixed">Mixed</option>
+                <option v-for="wf in (row.Waveforms || []).filter(wf => wf.Uid !== 'mixed')" :key="wf.Uid" :value="wf.Uid">
+                  {{ wf.Name || wf.Uid }}
+                </option>
+              </select>
+            </div>
             <AudioPlayer
               :src="getPlayUrl(row)"
               :initial-duration="getPlayDuration(row)"
+              :waveform-src="getWaveformUrl(row, getSelectedWaveformUid(row.Id, row)) || undefined"
+              :waveform-scale-max="getWaveformScaleMax(row)"
               @close="closePlayer"
             />
           </div>
@@ -1369,6 +1406,22 @@ watch(
 .player-row {
   border-bottom: 1px solid var(--color-border);
   animation: slide-down 0.2s ease-out;
+}
+
+.waveform-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem 0;
+  font-size: 12px;
+}
+
+.waveform-label {
+  color: var(--color-fg-muted);
+}
+
+.waveform-select {
+  min-width: 140px;
 }
 
 @keyframes slide-down {

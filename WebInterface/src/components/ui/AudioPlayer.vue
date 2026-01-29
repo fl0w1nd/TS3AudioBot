@@ -7,6 +7,8 @@ interface Props {
   title?: string
   isLive?: boolean
   initialDuration?: number
+  waveformSrc?: string
+  waveformScaleMax?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -301,43 +303,115 @@ function stopOverviewDrag() {
 async function loadWaveform() {
   waveformLoading.value = true
   try {
-    const response = await fetch(props.src)
-    const arrayBuffer = await response.arrayBuffer()
-    const audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
-    
-    const rawData = audioBuffer.getChannelData(0)
-    // High resolution sampling for zoom support
-    const samples = 4096
-    const blockSize = Math.floor(rawData.length / samples)
-    const filteredData: number[] = []
-    
-    for (let i = 0; i < samples; i++) {
-      let min = 0
-      let max = 0
-      for (let j = 0; j < blockSize; j++) {
-        const val = rawData[i * blockSize + j]
-        if (val < min) min = val
-        if (val > max) max = val
-      }
-      filteredData.push(Math.max(Math.abs(min), Math.abs(max)))
+    if (props.waveformSrc) {
+      await loadWaveformFromBinary(props.waveformSrc)
+    } else {
+      await loadWaveformFromAudio(props.src)
     }
-    
-    const maxVal = Math.max(...filteredData)
-    waveformData.value = filteredData.map(v => v / maxVal)
-    
-    audioContext.close()
   } catch {
-    const samples = 4096
-    waveformData.value = Array.from({ length: samples }, (_, i) => {
-      return 0.3 + Math.sin(i * 0.02) * 0.2 + Math.random() * 0.3
-    })
+    try {
+      if (props.waveformSrc) {
+        await loadWaveformFromAudio(props.src)
+      } else {
+        throw new Error('fallback')
+      }
+    } catch {
+      const samples = 4096
+      waveformData.value = Array.from({ length: samples }, (_, i) => {
+        return 0.3 + Math.sin(i * 0.02) * 0.2 + Math.random() * 0.3
+      })
+    }
   }
   waveformLoading.value = false
   nextTick(() => {
     drawWaveform()
     drawOverview()
   })
+}
+
+async function loadWaveformFromAudio(src: string) {
+  const response = await fetch(src)
+  const arrayBuffer = await response.arrayBuffer()
+  const audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
+  const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+
+  const rawData = audioBuffer.getChannelData(0)
+  const samples = 4096
+  const blockSize = Math.floor(rawData.length / samples)
+  const filteredData: number[] = []
+
+  for (let i = 0; i < samples; i++) {
+    let min = 0
+    let max = 0
+    for (let j = 0; j < blockSize; j++) {
+      const val = rawData[i * blockSize + j]
+      if (val < min) min = val
+      if (val > max) max = val
+    }
+    filteredData.push(Math.max(Math.abs(min), Math.abs(max)))
+  }
+
+  const maxVal = Math.max(...filteredData)
+  const scale = maxVal > 0 ? maxVal : 1
+  waveformData.value = filteredData.map(v => v / scale)
+
+  audioContext.close()
+}
+
+async function loadWaveformFromBinary(src: string) {
+  const response = await fetch(src)
+  const arrayBuffer = await response.arrayBuffer()
+  if (arrayBuffer.byteLength < 16) throw new Error('waveform too small')
+  const view = new DataView(arrayBuffer)
+
+  const magic =
+    String.fromCharCode(view.getUint8(0)) +
+    String.fromCharCode(view.getUint8(1)) +
+    String.fromCharCode(view.getUint8(2)) +
+    String.fromCharCode(view.getUint8(3))
+  if (magic !== 'TSWF') throw new Error('invalid waveform magic')
+
+  const sampleCount = view.getUint32(12, true)
+  const payload = new Uint8Array(arrayBuffer, 16)
+  const count = sampleCount > 0 && sampleCount <= payload.length ? sampleCount : payload.length
+  const trimmed = payload.subarray(0, count)
+  waveformData.value = scaleWaveform(downsampleWaveform(trimmed, 4096))
+}
+
+function downsampleWaveform(data: Uint8Array, targetSamples: number): number[] {
+  if (data.length === 0) return []
+  if (data.length <= targetSamples) {
+    return Array.from(data, v => v / 255)
+  }
+  const result: number[] = []
+  const blockSize = data.length / targetSamples
+  for (let i = 0; i < targetSamples; i++) {
+    const start = Math.floor(i * blockSize)
+    const end = Math.min(data.length, Math.floor((i + 1) * blockSize))
+    let max = 0
+    for (let j = start; j < end; j++) {
+      if (data[j] > max) max = data[j]
+    }
+    result.push(max / 255)
+  }
+  return result
+}
+
+function scaleWaveform(data: number[]): number[] {
+  if (data.length === 0) return data
+  const scaleMax = props.waveformScaleMax ?? 0
+  if (scaleMax > 0) {
+    const scale = scaleMax / 255
+    if (scale > 0) {
+      return data.map(v => {
+        const scaled = v / scale
+        return scaled > 1 ? 1 : scaled
+      })
+    }
+  }
+  const maxVal = Math.max(...data)
+  const scale = maxVal > 0 ? maxVal : 1
+  return data.map(v => v / scale)
 }
 
 function drawWaveform() {
@@ -580,6 +654,11 @@ watch(() => props.src, () => {
       audio.play().catch(() => {})
     }
   })
+})
+
+watch(() => props.waveformSrc, () => {
+  waveformData.value = []
+  loadWaveform()
 })
 
 watch(() => props.initialDuration, (val) => {
