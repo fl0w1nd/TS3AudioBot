@@ -625,11 +625,7 @@ function isLikelyUid(value: string): boolean {
   return /^[A-Za-z0-9+/=]{20,}$/.test(value)
 }
 
-function resetUserFilters() {
-  userQuery.value = ''
-  selectedUids.value = []
-  applyFilters()
-}
+
 
 function getInitials(name: string): string {
   const trimmed = name.trim()
@@ -698,6 +694,18 @@ watch(
   },
   { immediate: true }
 )
+
+let filterDebounce: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => [filterMode.value, filterDate.value, rangeDays.value, filterMonth.value, filterYear.value, selectedUids.value.slice(), userQuery.value],
+  () => {
+    if (filterDebounce) clearTimeout(filterDebounce)
+    filterDebounce = setTimeout(() => {
+      void applyFilters()
+    }, 300)
+  }
+)
+
 </script>
 
 <template>
@@ -846,12 +854,7 @@ watch(
             <span class="user-option-uid">{{ u.Uid }}</span>
           </button>
         </div>
-        <Button variant="soft" color="accent" size="sm" @click="applyFilters">
-          Apply filters
-        </Button>
-        <Button variant="ghost" color="neutral" size="sm" @click="resetUserFilters">
-          Clear user filters
-        </Button>
+
       </div>
     </div>
 
@@ -1120,7 +1123,8 @@ watch(
   background: transparent;
   font-size: 12px;
   color: var(--color-fg);
-  min-width: 140px;
+  min-width: 200px;
+  flex: 1;
 }
 
 .user-chip {
