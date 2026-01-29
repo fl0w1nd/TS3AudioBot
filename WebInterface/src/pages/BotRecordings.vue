@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, inject, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { Card, Button, Icon, Input, Table } from '@/components/ui'
 import { cmd, bot, isError, getErrorMessage, api } from '@/api/client'
 import { useToast } from '@/composables/useToast'
@@ -25,6 +25,9 @@ const audioRef = ref<HTMLAudioElement | null>(null)
 const showCalendar = ref(false)
 const calendarMonth = ref(new Date())
 const datePickerRef = ref<HTMLElement | null>(null)
+const calendarRecordingDates = ref<string[]>([])
+const calendarRecordingKey = ref('')
+const calendarLoading = ref(false)
 const filterMode = ref<'today' | 'range' | 'month' | 'year' | 'date' | 'all'>('today')
 const rangeDays = ref(7)
 const filterMonth = ref(todayStr.slice(0, 7))
@@ -78,15 +81,6 @@ const displayRecordings = computed(() => {
 const pagedRecordings = computed(() => {
   const start = (currentPage.value - 1) * pageSize
   return displayRecordings.value.slice(start, start + pageSize)
-})
-
-const recordingDates = computed(() => {
-  const dates = new Set<string>()
-  for (const rec of recordings.value) {
-    const date = getLocalDateFromValue(rec.Start)
-    if (date) dates.add(date)
-  }
-  return Array.from(dates).sort()
 })
 
 const recordingMonths = computed(() => {
@@ -517,6 +511,51 @@ function setYear(year: string) {
   filterMode.value = 'year'
 }
 
+function getCalendarRange(value: Date): { from: string; to: string } {
+  const year = value.getFullYear()
+  const month = value.getMonth()
+  const start = new Date(year, month, 1)
+  start.setHours(0, 0, 0, 0)
+  const end = new Date(year, month + 1, 0)
+  end.setHours(23, 59, 59, 999)
+  return { from: start.toISOString(), to: end.toISOString() }
+}
+
+async function loadCalendarDates() {
+  if (!showCalendar.value) return
+  const { from, to } = getCalendarRange(calendarMonth.value)
+  const uidArg = filterUidArg()
+  const nameArg = filterNameArg()
+  const key = `${from}|${to}|${uidArg ?? ''}|${nameArg ?? ''}`
+  if (key === calendarRecordingKey.value) return
+  calendarRecordingKey.value = key
+
+  calendarLoading.value = true
+  try {
+    const listArgs: (string | number)[] = ['recording', 'list', from, to]
+    if (uidArg || nameArg) {
+      listArgs.push(uidArg ?? '-')
+      if (nameArg) listArgs.push(nameArg)
+    }
+
+    const res = await bot(cmd<CmdRecordingInfo[]>(...listArgs), botId.value).fetch()
+    if (isError(res)) {
+      toast.error(getErrorMessage(res))
+      calendarRecordingDates.value = []
+      return
+    }
+
+    const dates = new Set<string>()
+    for (const rec of res) {
+      const date = getLocalDateFromValue(rec.Start)
+      if (date) dates.add(date)
+    }
+    calendarRecordingDates.value = Array.from(dates).sort()
+  } finally {
+    calendarLoading.value = false
+  }
+}
+
 function filterFromArg(): string | undefined {
   if (filterMode.value === 'range') {
     const now = new Date()
@@ -651,6 +690,14 @@ const columns = [
 onMounted(() => {
   applyFilters()
 })
+
+watch(
+  () => [showCalendar.value, calendarMonth.value, filterUidArg(), filterNameArg()],
+  ([isOpen]) => {
+    if (isOpen) void loadCalendarDates()
+  },
+  { immediate: true }
+)
 </script>
 
 <template>
@@ -749,7 +796,7 @@ onMounted(() => {
               Reset
             </button>
           </div>
-          <div class="calendar-grid">
+          <div class="calendar-grid" :class="{ 'calendar-loading': calendarLoading }">
             <span class="cal-week">Su</span>
             <span class="cal-week">Mo</span>
             <span class="cal-week">Tu</span>
@@ -764,9 +811,9 @@ onMounted(() => {
               :class="{
                 empty: !day.inMonth,
                 active: day.date && filterDate === day.date,
-                marked: day.date && recordingDates.includes(day.date),
+                marked: !calendarLoading && day.date && calendarRecordingDates.includes(day.date),
               }"
-              :disabled="!day.inMonth"
+              :disabled="!day.inMonth || calendarLoading"
               @click="selectDate(day.date)"
             >
               {{ day.day || '' }}
@@ -1192,6 +1239,12 @@ onMounted(() => {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 4px;
+  transition: opacity 0.15s ease-out;
+}
+
+.calendar-grid.calendar-loading {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .participants {
