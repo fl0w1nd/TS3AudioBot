@@ -234,6 +234,28 @@ function getDownloadUrl(id: string): string {
   return api.endpoint + bot(cmd('recording', 'get', id), botId.value).toString()
 }
 
+async function downloadRecording(rec: CmdRecordingInfo) {
+  const url = getDownloadUrl(rec.Id)
+  try {
+    const res = await fetch(url)
+    if (!res.ok) {
+      toast.error('Download failed')
+      return
+    }
+    const blob = await res.blob()
+    const filename = `recording_${rec.Id}.opus`
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(a.href)
+  } catch {
+    toast.error('Download failed')
+  }
+}
+
 function playRecording(rec: CmdRecordingInfo) {
   if (rec.IsOpen) return
   playUrl.value = getDownloadUrl(rec.Id)
@@ -922,14 +944,14 @@ watch(
             >
               <Icon name="play" :size="14" />
             </button>
-            <a 
-              :href="getDownloadUrl(row.Id)" 
-              target="_blank"
+            <button 
               class="action-btn"
               title="Download"
+              :disabled="row.IsOpen"
+              @click="downloadRecording(row)"
             >
               <Icon name="download" :size="14" />
-            </a>
+            </button>
             <button 
               class="action-btn action-btn-danger"
               title="Delete"
