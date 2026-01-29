@@ -772,19 +772,28 @@ namespace TS3AudioBot.Audio
 		{
 			if (!Enabled)
 				return;
-			if (!IsAlone())
+			if (IsAlone())
+			{
+				if (isRecording)
+					ScheduleStop();
+			}
+			else
+			{
 				CancelStopAndResume();
+			}
 		}
 
 		private void OnParticipantsChanged()
 		{
-			if (!isRecording)
-				return;
-			lock (recordLock)
+			if (isRecording)
 			{
-				RefreshParticipantsSnapshot();
-				UpdateCurrentEntryParticipantsLocked(DateTime.UtcNow);
+				lock (recordLock)
+				{
+					RefreshParticipantsSnapshot();
+					UpdateCurrentEntryParticipantsLocked(DateTime.UtcNow);
+				}
 			}
+			RecheckPartyState();
 		}
 
 		private void MaybeScheduleStopIfAlone(DateTime now)
@@ -819,8 +828,14 @@ namespace TS3AudioBot.Audio
 				return true;
 			var ownChannel = self.Channel;
 			var selfUid = self.Uid.Value;
-			var others = ts3FullClient.Book.Clients.Values.Any(c => c.Channel == ownChannel && c != self && c.Uid != selfUid);
-			return !others;
+			var excludeUids = config.Recording.ExcludeUids.Value;
+			var excludeSet = new HashSet<string>(excludeUids, StringComparer.Ordinal);
+			var hasValidParticipant = ts3FullClient.Book.Clients.Values.Any(c =>
+				c.Channel == ownChannel &&
+				c != self &&
+				c.Uid != selfUid &&
+				(c.Uid is null || !excludeSet.Contains(c.Uid.Value.Value)));
+			return !hasValidParticipant;
 		}
 
 		private RecordingEntry? FindEntryByFileId(string fileId)
@@ -1309,7 +1324,6 @@ namespace TS3AudioBot.Audio
 			var ownChannel = self.Channel;
 			var selfUid = self.Uid.Value;
 			var clients = ts3FullClient.Book.Clients.Values.Where(c => c.Channel == ownChannel && c != self && c.Uid != selfUid).ToList();
-			participants.Clear();
 			foreach (var client in clients)
 			{
 				if (client.Uid is null)

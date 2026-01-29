@@ -62,6 +62,7 @@ const model = ref<any>({
     stop_delay: '30s',
     min_duration: '5s',
     bitrate: 48,
+    exclude_uids: [] as string[],
   },
 })
 
@@ -69,6 +70,7 @@ const recordingMaxSizeValue = ref(5)
 const recordingMaxSizeUnit = ref<'K' | 'M' | 'G' | 'T'>('G')
 const recordingStopDelaySeconds = ref(30)
 const recordingMinDurationSeconds = ref(60)
+const recordingExcludeUidsText = ref('')
 
 const botId = computed(() => {
   if (props.online) {
@@ -150,6 +152,13 @@ async function loadSettings() {
 
   recordingStopDelaySeconds.value = parseTimeSpanSeconds(model.value.recording?.stop_delay, 30)
   recordingMinDurationSeconds.value = parseTimeSpanSeconds(model.value.recording?.min_duration, 60)
+  
+  const excludeUids = model.value.recording?.exclude_uids
+  if (Array.isArray(excludeUids)) {
+    recordingExcludeUidsText.value = excludeUids.join(', ')
+  } else {
+    recordingExcludeUidsText.value = ''
+  }
   
   // Load client versions
   try {
@@ -248,6 +257,15 @@ async function saveRecordingMinDuration() {
   const value = `${seconds}s`
   model.value.recording.min_duration = value
   await saveValue('recording.min_duration', value)
+}
+
+async function saveRecordingExcludeUids() {
+  const uids = recordingExcludeUidsText.value
+    .split(/[,;\n]/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+  model.value.recording.exclude_uids = uids
+  await saveValue('recording.exclude_uids', uids)
 }
 
 // Apply bot name to running bot
@@ -708,6 +726,20 @@ onMounted(loadSettings)
               />
             </div>
           </div>
+        </div>
+
+        <div v-if="isVisible('recording.exclude_uids', SettLevel.Advanced, 'Exclude UIDs')"
+             class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label">Exclude UIDs</label>
+            <p class="setting-description">Client UIDs to exclude from triggering recordings. When only these clients are in the channel, recording will not start. Separate with commas.</p>
+          </div>
+          <Input
+            v-model="recordingExcludeUidsText"
+            placeholder="uid1, uid2, ..."
+            size="sm"
+            @blur="saveRecordingExcludeUids"
+          />
         </div>
       </Card>
 

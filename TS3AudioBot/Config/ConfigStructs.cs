@@ -283,6 +283,8 @@ namespace TS3AudioBot.Config
 			"Minimum recording duration required to keep a file. Shorter recordings will be discarded.");
 		public ConfigValue<int> Bitrate { get; } = new ConfigValue<int>("bitrate", 48,
 			"Opus recording bitrate in kbps.");
+		public ConfigArray<string> ExcludeUids { get; } = new ConfigArray<string>("exclude_uids", Array.Empty<string>(),
+			"List of client UIDs to exclude from triggering recordings. When only these clients are in the channel, recording will not start or will stop.");
 	}
 
 	public class ConfData : ConfigTable
