@@ -352,7 +352,7 @@ const volumeIcon = computed(() => {
           </Button>
           <div class="volume-slider">
             <Slider
-              :model-value="localVolume"
+              v-model="localVolume"
               :min="0"
               :max="100"
               @change="setVolume"
@@ -447,7 +447,9 @@ const volumeIcon = computed(() => {
   align-items: center;
   gap: 0.75rem;
   width: 100%;
-  max-width: 400px;
+  min-width: 200px;
+  max-width: 600px;
+  flex: 1;
 }
 
 .progress-bar-wrapper {
@@ -481,7 +483,7 @@ const volumeIcon = computed(() => {
 }
 
 .volume-slider {
-  width: 80px;
+  width: 100px;
 }
 
 @media (max-width: 768px) {

@@ -53,16 +53,6 @@ function handleChange(event: Event) {
       }
     ]"
   >
-    <div class="slider-track">
-      <div
-        class="slider-fill"
-        :style="{ width: `${percentage}%` }"
-      />
-      <div
-        class="slider-thumb"
-        :style="{ left: `${percentage}%` }"
-      />
-    </div>
     <input
       type="range"
       :value="modelValue"
@@ -71,6 +61,7 @@ function handleChange(event: Event) {
       :step="step"
       :disabled="disabled"
       class="slider-input"
+      :style="{ '--fill-percent': `${percentage}%` }"
       @input="handleInput"
       @change="handleChange"
       @mousedown="isDragging = true"
@@ -92,57 +83,69 @@ function handleChange(event: Event) {
   height: 20px;
 }
 
-.slider-track {
-  position: relative;
+.slider-input {
+  -webkit-appearance: none;
+  appearance: none;
   flex: 1;
   height: 4px;
-  background: var(--color-bg-inset);
+  margin: 0;
+  background: linear-gradient(
+    to right,
+    var(--color-accent) 0%,
+    var(--color-accent) var(--fill-percent, 0%),
+    var(--color-bg-inset) var(--fill-percent, 0%),
+    var(--color-bg-inset) 100%
+  );
   border-radius: 2px;
-  overflow: visible;
+  cursor: pointer;
+  outline: none;
 }
 
-.slider-fill {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  background: var(--color-accent);
-  border-radius: 2px;
-  transition: width 0.05s ease-out;
-}
-
-.slider-thumb {
-  position: absolute;
-  top: 50%;
+/* WebKit (Chrome, Safari, Edge) */
+.slider-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
   width: 14px;
   height: 14px;
   background: var(--color-bg-elevated);
+  border: 2px solid var(--color-accent);
   border-radius: 50%;
-  transform: translate(-50%, -50%);
-  box-shadow: 
-    0 0 0 2px var(--color-accent),
-    0 2px 4px oklch(0 0 0 / 0.15);
+  cursor: pointer;
+  box-shadow: 0 2px 4px oklch(0 0 0 / 0.15);
   transition: transform 0.1s ease-out, box-shadow 0.1s ease-out;
-  pointer-events: none;
 }
 
-.slider-dragging .slider-thumb {
-  transform: translate(-50%, -50%) scale(1.15);
+.slider-input::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
+
+.slider-dragging .slider-input::-webkit-slider-thumb {
+  transform: scale(1.15);
   box-shadow: 
-    0 0 0 2px var(--color-accent),
     0 0 0 4px var(--color-accent-muted),
     0 2px 8px oklch(0 0 0 / 0.2);
 }
 
-.slider-input {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  opacity: 0;
+/* Firefox */
+.slider-input::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: var(--color-bg-elevated);
+  border: 2px solid var(--color-accent);
+  border-radius: 50%;
   cursor: pointer;
+  box-shadow: 0 2px 4px oklch(0 0 0 / 0.15);
+  transition: transform 0.1s ease-out, box-shadow 0.1s ease-out;
+}
+
+.slider-input::-moz-range-thumb:hover {
+  transform: scale(1.1);
+}
+
+.slider-input::-moz-range-track {
+  height: 4px;
+  background: transparent;
+  border-radius: 2px;
 }
 
 .slider-value {
