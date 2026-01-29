@@ -68,7 +68,7 @@ const model = ref<any>({
 const recordingMaxSizeValue = ref(5)
 const recordingMaxSizeUnit = ref<'K' | 'M' | 'G' | 'T'>('G')
 const recordingStopDelaySeconds = ref(30)
-const recordingMinDurationSeconds = ref(5)
+const recordingMinDurationSeconds = ref(60)
 
 const botId = computed(() => {
   if (props.online) {
@@ -149,7 +149,7 @@ async function loadSettings() {
   }
 
   recordingStopDelaySeconds.value = parseTimeSpanSeconds(model.value.recording?.stop_delay, 30)
-  recordingMinDurationSeconds.value = parseTimeSpanSeconds(model.value.recording?.min_duration, 5)
+  recordingMinDurationSeconds.value = parseTimeSpanSeconds(model.value.recording?.min_duration, 60)
   
   // Load client versions
   try {
@@ -667,14 +667,14 @@ onMounted(loadSettings)
              class="setting-item">
           <div class="setting-info">
             <label class="setting-label">Minimum duration</label>
-            <p class="setting-description">Discard recordings shorter than this (e.g. 5s)</p>
+            <p class="setting-description">Discard recordings shorter than this (e.g. 60s)</p>
           </div>
           <Input
             v-model.number="recordingMinDurationSeconds"
             type="number"
             min="0"
             step="1"
-            placeholder="5"
+            placeholder="60"
             size="sm"
             @blur="saveRecordingMinDuration"
           />

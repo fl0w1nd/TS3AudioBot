@@ -279,7 +279,7 @@ namespace TS3AudioBot.Config
 		};
 		public ConfigValue<TimeSpan> StopDelay { get; } = new ConfigValue<TimeSpan>("stop_delay", TimeSpan.FromSeconds(30),
 			"Delay before stopping a recording after the last client leaves the channel.");
-		public ConfigValue<TimeSpan> MinDuration { get; } = new ConfigValue<TimeSpan>("min_duration", TimeSpan.FromSeconds(5),
+		public ConfigValue<TimeSpan> MinDuration { get; } = new ConfigValue<TimeSpan>("min_duration", TimeSpan.FromSeconds(60),
 			"Minimum recording duration required to keep a file. Shorter recordings will be discarded.");
 		public ConfigValue<int> Bitrate { get; } = new ConfigValue<int>("bitrate", 48,
 			"Opus recording bitrate in kbps.");
